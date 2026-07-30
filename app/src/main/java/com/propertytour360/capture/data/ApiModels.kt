@@ -91,7 +91,27 @@ data class UploadUrlResponse(val assetId: String, val objectKey: String, val upl
 data class CompleteUploadBody(val checksumSha256: String? = null)
 data class AssetDto(val id: String, val kind: String, val status: String, val roomId: String? = null, val objectKey: String? = null)
 
-data class StitchBody(val assetIds: List<String>)
+data class StitchFrameBody(
+    val assetId: String,
+    val fileName: String,
+    val targetYawDegrees: Float,
+    val targetPitchDegrees: Float,
+    val measuredYawDegrees: Float,
+    val measuredPitchDegrees: Float,
+    val measuredRollDegrees: Float,
+    val capturedAtEpochMs: Long
+)
+
+data class StitchBody(
+    val assetIds: List<String>,
+    val capturePattern: String,
+    val frames: List<StitchFrameBody>,
+    val horizontalFovDegrees: Float,
+    val verticalFovDegrees: Float,
+    val minPitchDegrees: Float,
+    val maxPitchDegrees: Float,
+    val manifestAssetId: String? = null
+)
 data class JobResponse(val jobId: String, val status: String? = null)
 data class ProcessingJobDto(val id: String, val type: String, val status: String, val error: String? = null)
 

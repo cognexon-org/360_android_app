@@ -7,11 +7,14 @@ For every room:
 1. Stand close to the room centre, not directly against a wall.
 2. Keep the phone upright at approximately chest height.
 3. Start facing a textured wall or corner.
-4. Capture each guided direction while rotating clockwise.
-5. Keep lighting and exposure stable.
-6. Include the doorway used to enter/leave the room.
-7. Capture the next room in physical walking order so the automatic room graph is meaningful.
-8. Review the server QA result before leaving the property.
+4. Choose one capture pattern per room:
+   - **Quick Room View:** one level clockwise rotation.
+   - **Full Room Sphere:** one upper-ring rotation, one lower-ring rotation, then ceiling and floor.
+5. Follow auto-capture prompts; do not walk around the room while rotating.
+6. Keep lighting and exposure stable.
+7. Include the doorway used to enter/leave the room.
+8. Capture the next room in physical walking order so the automatic room graph is meaningful.
+9. Review the server QA result before leaving the property.
 
 Avoid moving people, spinning fans, televisions, mirrors dominating the image, very dark rooms and rapid movement.
 

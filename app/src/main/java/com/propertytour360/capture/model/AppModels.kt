@@ -7,12 +7,62 @@ enum class CaptureMode(val apiValue: String, val title: String) {
     DESIGN_SCAN("DESIGN_SCAN", "Mode B — Design Scan")
 }
 
+enum class PanoramaCapturePattern(
+    val apiValue: String,
+    val title: String,
+    val shortDescription: String,
+    val fullSphere: Boolean
+) {
+    QUICK_CENTRAL_RING(
+        apiValue = "QUICK_CENTRAL_RING",
+        title = "Quick Room View",
+        shortDescription = "One guided rotation for a full horizontal 360° view",
+        fullSphere = false
+    ),
+    FULL_TWO_RINGS_WITH_CAPS(
+        apiValue = "FULL_TWO_RINGS_WITH_CAPS",
+        title = "Full Room Sphere",
+        shortDescription = "Two guided rotations plus ceiling and floor",
+        fullSphere = true
+    )
+}
+
+data class PanoramaFrameMetadata(
+    val fileName: String,
+    val targetYawDegrees: Float,
+    val targetPitchDegrees: Float,
+    val measuredYawDegrees: Float,
+    val measuredPitchDegrees: Float,
+    val measuredRollDegrees: Float,
+    val angularSpeedDegreesPerSecond: Float,
+    val sensorTimestampNs: Long,
+    val capturedAtEpochMs: Long
+)
+
+data class PanoramaCaptureResult(
+    val files: List<File>,
+    val manifestFile: File,
+    val pattern: PanoramaCapturePattern,
+    val frames: List<PanoramaFrameMetadata>,
+    val horizontalFovDegrees: Float,
+    val verticalFovDegrees: Float,
+    val minPitchDegrees: Float,
+    val maxPitchDegrees: Float
+)
+
 data class RoomDraft(
     val serverId: String,
     val name: String,
     val sortOrder: Int,
     val localPhotos: List<File> = emptyList(),
     val panoramaFile: File? = null,
+    val panoramaCapturePattern: PanoramaCapturePattern? = null,
+    val panoramaManifestFile: File? = null,
+    val panoramaFrames: List<PanoramaFrameMetadata> = emptyList(),
+    val panoramaHorizontalFovDegrees: Float? = null,
+    val panoramaVerticalFovDegrees: Float? = null,
+    val panoramaMinPitchDegrees: Float? = null,
+    val panoramaMaxPitchDegrees: Float? = null,
     val processingStatus: String = "Not captured",
     val lengthM: Double? = null,
     val widthM: Double? = null,

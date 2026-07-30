@@ -44,7 +44,7 @@ class BackendRepository(
             "manufacturer" to Build.MANUFACTURER,
             "model" to Build.MODEL,
             "sdk" to Build.VERSION.SDK_INT,
-            "appVersion" to "1.0.0"
+            "appVersion" to "2.1.0"
         )
         return serviceProvider(baseUrl).createCapture(
             bearer(token),
@@ -89,18 +89,61 @@ class BackendRepository(
         baseUrl: String,
         token: String,
         captureId: String,
-        roomId: String,
-        photos: List<File>,
+        room: RoomDraft,
         progress: (Int, Int) -> Unit
     ): String {
-        val assetIds = mutableListOf<String>()
-        photos.forEachIndexed { index, file ->
-            val response = uploadFile(baseUrl, token, captureId, roomId, "PHOTO", file, "image/jpeg")
-            assetIds += response.id
-            progress(index + 1, photos.size)
+        val pattern = room.panoramaCapturePattern
+            ?: error("Capture pattern is missing. Recapture this room with the updated guided flow.")
+        require(room.panoramaFrames.size == room.localPhotos.size) {
+            "Capture metadata does not match the photo count. Please recapture the room."
         }
+
+        val uploadedByFileName = linkedMapOf<String, AssetDto>()
+        room.localPhotos.forEachIndexed { index, file ->
+            val response = uploadFile(baseUrl, token, captureId, room.serverId, "PHOTO", file, "image/jpeg")
+            uploadedByFileName[file.name] = response
+            progress(index + 1, room.localPhotos.size)
+        }
+
+        val manifestAssetId = room.panoramaManifestFile?.takeIf { it.exists() }?.let { manifest ->
+            uploadFile(
+                baseUrl,
+                token,
+                captureId,
+                room.serverId,
+                "OTHER",
+                manifest,
+                "application/json"
+            ).id
+        }
+
+        val frames = room.panoramaFrames.map { metadata ->
+            val asset = uploadedByFileName[metadata.fileName]
+                ?: error("Uploaded asset missing for ${metadata.fileName}")
+            StitchFrameBody(
+                assetId = asset.id,
+                fileName = metadata.fileName,
+                targetYawDegrees = metadata.targetYawDegrees,
+                targetPitchDegrees = metadata.targetPitchDegrees,
+                measuredYawDegrees = metadata.measuredYawDegrees,
+                measuredPitchDegrees = metadata.measuredPitchDegrees,
+                measuredRollDegrees = metadata.measuredRollDegrees,
+                capturedAtEpochMs = metadata.capturedAtEpochMs
+            )
+        }
+        val assetIds = frames.map { it.assetId }
+        val body = StitchBody(
+            assetIds = assetIds,
+            capturePattern = pattern.apiValue,
+            frames = frames,
+            horizontalFovDegrees = room.panoramaHorizontalFovDegrees ?: 52f,
+            verticalFovDegrees = room.panoramaVerticalFovDegrees ?: 68f,
+            minPitchDegrees = room.panoramaMinPitchDegrees ?: -35f,
+            maxPitchDegrees = room.panoramaMaxPitchDegrees ?: 35f,
+            manifestAssetId = manifestAssetId
+        )
         return serviceProvider(baseUrl)
-            .stitchPanorama(bearer(token), captureId, roomId, StitchBody(assetIds))
+            .stitchPanorama(bearer(token), captureId, room.serverId, body)
             .jobId
     }
 

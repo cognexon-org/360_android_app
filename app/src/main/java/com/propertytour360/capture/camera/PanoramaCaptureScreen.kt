@@ -1,10 +1,16 @@
 package com.propertytour360.capture.camera
 
 import android.Manifest
+import android.app.Activity
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.os.SystemClock
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.camera2.interop.Camera2CameraControl
+import androidx.camera.camera2.interop.CaptureRequestOptions
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
@@ -50,74 +56,146 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.google.gson.GsonBuilder
+import com.propertytour360.capture.model.PanoramaCapturePattern
+import com.propertytour360.capture.model.PanoramaCaptureResult
+import com.propertytour360.capture.model.PanoramaFrameMetadata
 import com.propertytour360.capture.util.AngleMath
 import kotlinx.coroutines.delay
 import java.io.File
 import java.text.DecimalFormat
 
-private const val YAW_TOLERANCE_DEGREES = 8f
-private const val PITCH_TOLERANCE_DEGREES = 8f
-private const val MAX_CAPTURE_SPEED_DEGREES_PER_SECOND = 16f
-private const val AUTO_CAPTURE_DWELL_MS = 650L
+// Tighter than the old 7°: the server-side feature matcher needs neighbouring
+// frames to genuinely overlap, and two adjacent frames each 7° off in opposite
+// directions used to erase the overlap entirely. 3.5° with the denser ring keeps
+// worst-case overlap above one third of a frame.
+private const val YAW_TOLERANCE_DEGREES = 3.5f
+private const val PITCH_TOLERANCE_DEGREES = 3.5f
+private const val MAX_CAPTURE_SPEED_DEGREES_PER_SECOND = 15f
+private const val AUTO_CAPTURE_DWELL_MS = 600L
+private const val UPPER_RING_PITCH_DEGREES = -30f
+private const val LOWER_RING_PITCH_DEGREES = 30f
 
-/**
- * 26-point sphere: three overlapping rings plus zenith and nadir.
- * This creates substantially better spherical coverage than the original 12-frame horizontal-only baseline.
- */
-private val CAPTURE_TARGETS: List<CaptureTarget> = buildList {
-    listOf(0f, 45f, 90f, 135f, 180f, 225f, 270f, 315f).forEach { add(CaptureTarget(it, 0f, "Horizon")) }
-    listOf(22.5f, 67.5f, 112.5f, 157.5f, 202.5f, 247.5f, 292.5f, 337.5f).forEach { add(CaptureTarget(it, -42f, "Upper ring")) }
-    listOf(0f, 45f, 90f, 135f, 180f, 225f, 270f, 315f).forEach { add(CaptureTarget(it, 42f, "Lower ring")) }
-    add(CaptureTarget(0f, -78f, "Ceiling"))
-    add(CaptureTarget(180f, 78f, "Floor"))
+private data class CaptureTarget(
+    val yawDegrees: Float,
+    val pitchDegrees: Float,
+    val label: String
+)
+
+private fun buildCaptureTargets(
+    pattern: PanoramaCapturePattern,
+    ringFrameCount: Int
+): List<CaptureTarget> {
+    val step = 360f / ringFrameCount
+    return when (pattern) {
+        PanoramaCapturePattern.QUICK_CENTRAL_RING -> List(ringFrameCount) { index ->
+            CaptureTarget(index * step, 0f, "Central ring")
+        }
+
+        PanoramaCapturePattern.FULL_TWO_RINGS_WITH_CAPS -> buildList {
+            List(ringFrameCount) { index -> index * step }.forEach {
+                add(CaptureTarget(it, UPPER_RING_PITCH_DEGREES, "Upper ring"))
+            }
+            // Offset the second ring so vertical seams do not all meet at the same longitudes.
+            List(ringFrameCount) { index -> (index * step + step / 2f) % 360f }.forEach {
+                add(CaptureTarget(it, LOWER_RING_PITCH_DEGREES, "Lower ring"))
+            }
+            add(CaptureTarget(0f, -82f, "Ceiling"))
+            add(CaptureTarget(180f, 82f, "Floor"))
+        }
+    }
 }
 
-private data class CaptureTarget(val yawDegrees: Float, val pitchDegrees: Float, val label: String)
-
-private data class CapturedFrameMetadata(
-    val fileName: String,
-    val targetYawDegrees: Float,
-    val targetPitchDegrees: Float,
-    val measuredYawDegrees: Float,
-    val measuredPitchDegrees: Float,
-    val angularSpeedDegreesPerSecond: Float,
-    val capturedAtEpochMs: Long
-)
+/**
+ * Lock or unlock auto-exposure and auto-white-balance.
+ *
+ * Every frame of a panorama should be metered identically: if CameraX re-meters
+ * per shot, a bright window in one frame darkens that frame's walls, and the
+ * server can only correct per-channel gain, not the colour shift. Locking after
+ * the first (reference) frame makes all subsequent frames photometrically
+ * consistent, which also makes the server's seam finder converge on cleaner cuts.
+ */
+@OptIn(ExperimentalCamera2Interop::class)
+private fun setExposureLock(camera: Camera?, locked: Boolean) {
+    val control = camera?.cameraControl ?: return
+    runCatching {
+        Camera2CameraControl.from(control).setCaptureRequestOptions(
+            CaptureRequestOptions.Builder()
+                .setCaptureRequestOption(android.hardware.camera2.CaptureRequest.CONTROL_AE_LOCK, locked)
+                .setCaptureRequestOption(android.hardware.camera2.CaptureRequest.CONTROL_AWB_LOCK, locked)
+                .build()
+        )
+    }
+}
 
 @Composable
 fun PanoramaCaptureScreen(
     roomId: String,
+    pattern: PanoramaCapturePattern,
     onCancel: () -> Unit,
-    onComplete: (String, List<File>) -> Unit
+    onComplete: (PanoramaCaptureResult) -> Unit
 ) {
     val context = LocalContext.current
-    var granted by remember {
-        mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val activity = context as? Activity
+    val fov = remember { CameraFovEstimator.estimateNormalBackCameraPortrait(context) }
+    val ringFrameCount = remember(fov.horizontalDegrees) {
+        CameraFovEstimator.recommendedRingFrameCount(fov.horizontalDegrees)
     }
-    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted = it }
-    LaunchedEffect(Unit) { if (!granted) permissionLauncher.launch(Manifest.permission.CAMERA) }
+    val captureTargets = remember(pattern, ringFrameCount) {
+        buildCaptureTargets(pattern, ringFrameCount)
+    }
+    val quickPitchLimit = remember(fov.verticalDegrees) {
+        (fov.verticalDegrees / 2f - 4f).coerceIn(25f, 42f)
+    }
+    val minPitchDegrees = if (pattern.fullSphere) -90f else -quickPitchLimit
+    val maxPitchDegrees = if (pattern.fullSphere) 90f else quickPitchLimit
+
+    DisposableEffect(activity) {
+        val oldOrientation = activity?.requestedOrientation
+        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        onDispose {
+            if (oldOrientation != null) activity?.requestedOrientation = oldOrientation
+        }
+    }
+
+    var granted by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        granted = it
+    }
+    LaunchedEffect(Unit) {
+        if (!granted) permissionLauncher.launch(Manifest.permission.CAMERA)
+    }
 
     if (!granted) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text("Camera permission is required")
-                Button(onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }) { Text("Grant camera") }
+                Button(onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }) {
+                    Text("Grant camera")
+                }
                 OutlinedButton(onClick = onCancel) { Text("Cancel") }
             }
         }
         return
     }
 
-    val lifecycleOwner = LocalLifecycleOwner.current
     val tracker = remember { OrientationTracker(context) }
     val sample by tracker.sample.collectAsStateWithLifecycle()
     val files = remember { mutableStateListOf<File>() }
-    val frameMetadata = remember { mutableStateListOf<CapturedFrameMetadata>() }
-    val captureFolder = remember(roomId) {
-        File(context.filesDir, "captures/panorama-${System.currentTimeMillis()}-$roomId").apply { mkdirs() }
+    val frameMetadata = remember { mutableStateListOf<PanoramaFrameMetadata>() }
+    val captureFolder = remember(roomId, pattern) {
+        File(
+            context.filesDir,
+            "captures/panorama-${System.currentTimeMillis()}-${pattern.apiValue.lowercase()}-$roomId"
+        ).apply { mkdirs() }
     }
     var startYaw by remember { mutableStateOf<Float?>(null) }
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
+    var boundCamera by remember { mutableStateOf<Camera?>(null) }
     var capturing by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var autoCapture by remember { mutableStateOf(true) }
@@ -128,22 +206,29 @@ fun PanoramaCaptureScreen(
         onDispose { tracker.stop() }
     }
 
-    val target = CAPTURE_TARGETS.getOrNull(files.size)
+    val target = captureTargets.getOrNull(files.size)
     val relativeYaw = startYaw?.let { AngleMath.clockwiseFrom(it, sample.yawDegrees) } ?: 0f
     val yawError = target?.let { AngleMath.angularDistance(relativeYaw, it.yawDegrees) } ?: 0f
     val pitchError = target?.let { kotlin.math.abs(sample.pitchDegrees - it.pitchDegrees) } ?: 0f
-    val aligned = target != null && yawError <= YAW_TOLERANCE_DEGREES && pitchError <= PITCH_TOLERANCE_DEGREES
+    val aligned = target != null &&
+        yawError <= YAW_TOLERANCE_DEGREES &&
+        pitchError <= PITCH_TOLERANCE_DEGREES
     val stable = sample.angularSpeedDegreesPerSecond <= MAX_CAPTURE_SPEED_DEGREES_PER_SECOND
-    val ready = target != null && (files.isEmpty() || (aligned && stable)) && sample.sensorAvailable
+    val ready = target != null &&
+        sample.sensorAvailable &&
+        if (files.isEmpty()) pitchError <= PITCH_TOLERANCE_DEGREES && stable else aligned && stable
 
     fun captureCurrentTarget() {
         val capture = imageCapture ?: return
         val currentTarget = target ?: return
-        if (capturing) return
-        if (startYaw == null) startYaw = sample.yawDegrees
+        if (capturing || !sample.sensorAvailable) return
 
+        val orientationAtShutter = sample
+        val referenceYaw = startYaw ?: orientationAtShutter.yawDegrees.also { startYaw = it }
+        val measuredRelativeYaw = AngleMath.clockwiseFrom(referenceYaw, orientationAtShutter.yawDegrees)
         val index = files.size
         val file = File(captureFolder, "frame_${index.toString().padStart(2, '0')}.jpg")
+
         capturing = true
         alignedSinceMs = 0L
         capture.takePicture(
@@ -152,13 +237,20 @@ fun PanoramaCaptureScreen(
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
                     files += file
-                    frameMetadata += CapturedFrameMetadata(
+                    if (files.size == 1) {
+                        // The first frame is the photometric reference; freeze
+                        // exposure and white balance for the rest of the sweep.
+                        setExposureLock(boundCamera, true)
+                    }
+                    frameMetadata += PanoramaFrameMetadata(
                         fileName = file.name,
                         targetYawDegrees = currentTarget.yawDegrees,
                         targetPitchDegrees = currentTarget.pitchDegrees,
-                        measuredYawDegrees = relativeYaw,
-                        measuredPitchDegrees = sample.pitchDegrees,
-                        angularSpeedDegreesPerSecond = sample.angularSpeedDegreesPerSecond,
+                        measuredYawDegrees = measuredRelativeYaw,
+                        measuredPitchDegrees = orientationAtShutter.pitchDegrees,
+                        measuredRollDegrees = orientationAtShutter.rollDegrees,
+                        angularSpeedDegreesPerSecond = orientationAtShutter.angularSpeedDegreesPerSecond,
+                        sensorTimestampNs = orientationAtShutter.timestampNs,
                         capturedAtEpochMs = System.currentTimeMillis()
                     )
                     capturing = false
@@ -180,8 +272,7 @@ fun PanoramaCaptureScreen(
         }
         alignedSinceMs = SystemClock.elapsedRealtime()
         while (ready && autoCapture && !capturing) {
-            val elapsed = SystemClock.elapsedRealtime() - alignedSinceMs
-            if (elapsed >= AUTO_CAPTURE_DWELL_MS) {
+            if (SystemClock.elapsedRealtime() - alignedSinceMs >= AUTO_CAPTURE_DWELL_MS) {
                 captureCurrentTarget()
                 break
             }
@@ -198,15 +289,25 @@ fun PanoramaCaptureScreen(
                     providerFuture.addListener({
                         try {
                             val provider = providerFuture.get()
-                            val preview = Preview.Builder().build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
+                            val preview = Preview.Builder().build().also {
+                                it.setSurfaceProvider(previewView.surfaceProvider)
+                            }
                             val capture = ImageCapture.Builder()
                                 .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
                                 .setJpegQuality(95)
                                 .setFlashMode(ImageCapture.FLASH_MODE_OFF)
-                                .setTargetRotation(previewView.display?.rotation ?: android.view.Surface.ROTATION_0)
+                                .setTargetRotation(
+                                    previewView.display?.rotation ?: android.view.Surface.ROTATION_0
+                                )
                                 .build()
                             provider.unbindAll()
-                            provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, capture)
+                            val camera = provider.bindToLifecycle(
+                                lifecycleOwner,
+                                CameraSelector.DEFAULT_BACK_CAMERA,
+                                preview,
+                                capture
+                            )
+                            boundCamera = camera
                             imageCapture = capture
                         } catch (throwable: Throwable) {
                             error = throwable.message
@@ -218,7 +319,9 @@ fun PanoramaCaptureScreen(
         )
 
         TargetReticle(
-            yawErrorDegrees = target?.let { AngleMath.normalizeSignedDegrees(it.yawDegrees - relativeYaw) } ?: 0f,
+            yawErrorDegrees = target?.let {
+                AngleMath.normalizeSignedDegrees(it.yawDegrees - relativeYaw)
+            } ?: 0f,
             pitchErrorDegrees = target?.let { it.pitchDegrees - sample.pitchDegrees } ?: 0f,
             ready = ready,
             modifier = Modifier.align(Alignment.Center).size(260.dp)
@@ -234,7 +337,14 @@ fun PanoramaCaptureScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 OutlinedButton(onClick = onCancel) { Text("Cancel", color = Color.White) }
-                Text("${files.size}/${CAPTURE_TARGETS.size}", color = Color.White, style = MaterialTheme.typography.titleLarge)
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(pattern.title, color = Color.White, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "${files.size}/${captureTargets.size}",
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleLarge
+                    )
+                }
             }
 
             Column(
@@ -242,23 +352,42 @@ fun PanoramaCaptureScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 val instruction = when {
-                    !sample.sensorAvailable -> "Orientation sensor unavailable — use manual panorama import"
-                    target == null -> "Sphere complete"
-                    files.isEmpty() -> "Hold the phone upright and capture the first view"
-                    !aligned -> "Move the target into the centre ring"
+                    !sample.sensorAvailable -> "Orientation sensor unavailable — import a panorama instead"
+                    target == null -> if (pattern.fullSphere) "Full sphere complete" else "Horizontal 360° complete"
+                    files.isEmpty() -> "Stand near the room centre and capture the first view"
+                    !aligned -> when (target.label) {
+                        "Upper ring" -> "Tilt slightly upward and move the target into the centre"
+                        "Lower ring" -> "Tilt slightly downward and move the target into the centre"
+                        "Ceiling" -> "Point directly at the ceiling"
+                        "Floor" -> "Point directly at the floor"
+                        else -> "Keep the phone level and move the target into the centre"
+                    }
                     !stable -> "Hold still"
                     else -> "Aligned — hold steady"
                 }
-                Text(target?.let { "${it.label}: ${it.yawDegrees.toInt()}° / ${it.pitchDegrees.toInt()}°" } ?: "Capture complete",
-                    color = Color.White, style = MaterialTheme.typography.titleMedium)
+
+                Text(
+                    target?.let {
+                        "${it.label}: ${it.yawDegrees.toInt()}° / ${it.pitchDegrees.toInt()}°"
+                    } ?: "Capture complete",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleMedium
+                )
                 Text(instruction, color = if (ready) Color(0xFF82E6A1) else Color.White)
                 if (target != null) {
                     Text(
-                        "Yaw error ${DecimalFormat("0.0").format(yawError)}° • pitch error ${DecimalFormat("0.0").format(pitchError)}° • speed ${DecimalFormat("0").format(sample.angularSpeedDegreesPerSecond)}°/s",
+                        "Yaw ${DecimalFormat("0.0").format(yawError)}° • " +
+                            "pitch ${DecimalFormat("0.0").format(pitchError)}° • " +
+                            "speed ${DecimalFormat("0").format(sample.angularSpeedDegreesPerSecond)}°/s",
                         color = Color.LightGray,
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
+                Text(
+                    "$ringFrameCount positions per ring • normal 1× camera • portrait",
+                    color = Color.LightGray,
+                    style = MaterialTheme.typography.bodySmall
+                )
                 error?.let { Text(it, color = Color(0xFFFF8A80)) }
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -271,31 +400,54 @@ fun PanoramaCaptureScreen(
                 if (target != null) {
                     Button(
                         onClick = { captureCurrentTarget() },
-                        enabled = !capturing && imageCapture != null && (files.isEmpty() || ready),
+                        enabled = !capturing &&
+                            imageCapture != null &&
+                            sample.sensorAvailable &&
+                            (files.isEmpty() || ready),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        if (capturing) CircularProgressIndicator(modifier = Modifier.height(20.dp))
-                        else Text(if (files.isEmpty()) "Set reference and capture" else "Capture this direction")
+                        if (capturing) {
+                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                        } else {
+                            Text(if (files.isEmpty()) "Set reference and capture" else "Capture this direction")
+                        }
                     }
                 } else {
                     Button(
                         onClick = {
                             val manifest = File(captureFolder, "capture_manifest.json")
+                            val manifestData = mapOf(
+                                "schemaVersion" to 3,
+                                "roomId" to roomId,
+                                "capturePattern" to pattern.apiValue,
+                                "ringFrameCount" to ringFrameCount,
+                                "frameCount" to files.size,
+                                "horizontalFovDegrees" to fov.horizontalDegrees,
+                                "verticalFovDegrees" to fov.verticalDegrees,
+                                "minPitchDegrees" to minPitchDegrees,
+                                "maxPitchDegrees" to maxPitchDegrees,
+                                "frames" to frameMetadata.toList()
+                            )
                             manifest.writeText(
-                                GsonBuilder().setPrettyPrinting().create().toJson(
-                                    mapOf(
-                                        "schemaVersion" to 2,
-                                        "roomId" to roomId,
-                                        "capturePattern" to "PT360_SPHERE_26",
-                                        "frameCount" to files.size,
-                                        "frames" to frameMetadata.toList()
-                                    )
+                                GsonBuilder().setPrettyPrinting().create().toJson(manifestData)
+                            )
+                            onComplete(
+                                PanoramaCaptureResult(
+                                    files = files.toList(),
+                                    manifestFile = manifest,
+                                    pattern = pattern,
+                                    frames = frameMetadata.toList(),
+                                    horizontalFovDegrees = fov.horizontalDegrees,
+                                    verticalFovDegrees = fov.verticalDegrees,
+                                    minPitchDegrees = minPitchDegrees,
+                                    maxPitchDegrees = maxPitchDegrees
                                 )
                             )
-                            onComplete(roomId, files.toList())
                         },
                         modifier = Modifier.fillMaxWidth()
-                    ) { Text("Use complete 360° capture") }
+                    ) {
+                        Text(if (pattern.fullSphere) "Use full room sphere" else "Use quick room view")
+                    }
                 }
 
                 if (files.isNotEmpty() && target != null) {
@@ -303,10 +455,17 @@ fun PanoramaCaptureScreen(
                         onClick = {
                             files.removeLastOrNull()?.delete()
                             frameMetadata.removeLastOrNull()
-                            if (files.isEmpty()) startYaw = null
+                            if (files.isEmpty()) {
+                                startYaw = null
+                                // Back to no reference frame: let the camera
+                                // re-meter for the fresh first shot.
+                                setExposureLock(boundCamera, false)
+                            }
                         },
                         modifier = Modifier.fillMaxWidth()
-                    ) { Text("Retake previous", color = Color.White) }
+                    ) {
+                        Text("Retake previous", color = Color.White)
+                    }
                 }
             }
         }
@@ -323,8 +482,10 @@ private fun TargetReticle(
     Canvas(modifier) {
         val centre = Offset(size.width / 2f, size.height / 2f)
         val maxOffset = size.minDimension * 0.38f
-        val x = (yawErrorDegrees / 45f).coerceIn(-1f, 1f) * maxOffset
-        val y = (-pitchErrorDegrees / 45f).coerceIn(-1f, 1f) * maxOffset
+        // 20° full-scale (was 45°): with the tighter 3.5° tolerance the dot must
+        // visibly respond to small corrections or aligning feels like guesswork.
+        val x = (yawErrorDegrees / 20f).coerceIn(-1f, 1f) * maxOffset
+        val y = (-pitchErrorDegrees / 20f).coerceIn(-1f, 1f) * maxOffset
         drawCircle(
             color = if (ready) Color(0xFF67E08B) else Color.White,
             radius = size.minDimension * 0.095f,

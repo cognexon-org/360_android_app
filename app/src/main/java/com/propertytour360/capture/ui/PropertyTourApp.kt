@@ -64,14 +64,20 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.propertytour360.capture.ar.ArScanActivity
 import com.propertytour360.capture.camera.PanoramaCaptureScreen
 import com.propertytour360.capture.model.CaptureMode
+import com.propertytour360.capture.model.PanoramaCapturePattern
 import com.propertytour360.capture.model.RoomDraft
 import java.io.File
+
+private data class PanoramaCaptureRequest(
+    val roomId: String,
+    val pattern: PanoramaCapturePattern
+)
 
 @Composable
 fun PropertyTourApp(viewModel: MainViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
-    var cameraRoomId by remember { mutableStateOf<String?>(null) }
+    var cameraRequest by remember { mutableStateOf<PanoramaCaptureRequest?>(null) }
     var settingsOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(state.message, state.error) {
@@ -82,13 +88,14 @@ fun PropertyTourApp(viewModel: MainViewModel) {
         }
     }
 
-    if (cameraRoomId != null) {
+    cameraRequest?.let { request ->
         PanoramaCaptureScreen(
-            roomId = cameraRoomId!!,
-            onCancel = { cameraRoomId = null },
-            onComplete = { roomId, files ->
-                viewModel.setRoomPhotos(roomId, files)
-                cameraRoomId = null
+            roomId = request.roomId,
+            pattern = request.pattern,
+            onCancel = { cameraRequest = null },
+            onComplete = { result ->
+                viewModel.setRoomPhotos(request.roomId, result)
+                cameraRequest = null
             }
         )
         return
@@ -118,7 +125,9 @@ fun PropertyTourApp(viewModel: MainViewModel) {
                     state = state,
                     onBack = viewModel::resetWorkspace,
                     onAddRoom = viewModel::addRoom,
-                    onCapture = { cameraRoomId = it },
+                    onCapture = { roomId, pattern ->
+                        cameraRequest = PanoramaCaptureRequest(roomId, pattern)
+                    },
                     onImportPanorama = viewModel::importPanorama,
                     onUploadRoom = viewModel::uploadModeARoom,
                     onPublish = viewModel::submitAndPublishTour
@@ -127,7 +136,12 @@ fun PropertyTourApp(viewModel: MainViewModel) {
                     state = state,
                     onBack = viewModel::resetWorkspace,
                     onAddRoom = viewModel::addRoom,
-                    onCaptureReference = { cameraRoomId = it },
+                    onCaptureReference = {
+                        cameraRequest = PanoramaCaptureRequest(
+                            it,
+                            PanoramaCapturePattern.QUICK_CENTRAL_RING
+                        )
+                    },
                     onImportPanorama = viewModel::importPanorama,
                     onUploadReference = viewModel::uploadModeARoom,
                     onSetArEvidence = viewModel::setArEvidence,
@@ -310,7 +324,7 @@ private fun ModeAWorkspaceScreen(
     state: com.propertytour360.capture.model.AppUiState,
     onBack: () -> Unit,
     onAddRoom: (String) -> Unit,
-    onCapture: (String) -> Unit,
+    onCapture: (String, PanoramaCapturePattern) -> Unit,
     onImportPanorama: (String, Uri) -> Unit,
     onUploadRoom: (String) -> Unit,
     onPublish: (String) -> Unit
@@ -319,6 +333,7 @@ private fun ModeAWorkspaceScreen(
     var roomName by remember { mutableStateOf("") }
     var title by remember { mutableStateOf("${workspace.propertyName} — ${workspace.unitLabel}") }
     var importRoomId by remember { mutableStateOf<String?>(null) }
+    var captureChoiceRoomId by remember { mutableStateOf<String?>(null) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         val roomId = importRoomId
         if (uri != null && roomId != null) onImportPanorama(roomId, uri)
@@ -338,12 +353,12 @@ private fun ModeAWorkspaceScreen(
         ) {
             item {
                 Text(workspace.propertyName, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                Text("Stand near the room centre. Capture 12 overlapping directions or import a valid 2:1 panorama.")
+                Text("Choose Quick Room View for one rotation or Full Room Sphere for two rotations plus ceiling and floor.")
             }
             items(workspace.rooms, key = { it.serverId }) { room ->
                 RoomTourCard(
                     room = room,
-                    onCapture = { onCapture(room.serverId) },
+                    onCapture = { captureChoiceRoomId = room.serverId },
                     onImport = {
                         importRoomId = room.serverId
                         picker.launch("image/jpeg")
@@ -368,6 +383,53 @@ private fun ModeAWorkspaceScreen(
             }
         }
     }
+
+    captureChoiceRoomId?.let { roomId ->
+        CapturePatternDialog(
+            onDismiss = { captureChoiceRoomId = null },
+            onSelect = { pattern ->
+                captureChoiceRoomId = null
+                onCapture(roomId, pattern)
+            }
+        )
+    }
+}
+
+@Composable
+private fun CapturePatternDialog(
+    onDismiss: () -> Unit,
+    onSelect: (PanoramaCapturePattern) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Choose room capture") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Card(onClick = { onSelect(PanoramaCapturePattern.QUICK_CENTRAL_RING) }) {
+                    Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                        Text("Quick Room View", fontWeight = FontWeight.Bold)
+                        Text("One guided rotation • approximately 8–10 photos")
+                        Text(
+                            "Fastest capture and lowest stitching risk. Full horizontal 360°; vertical viewing is limited.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+                Card(onClick = { onSelect(PanoramaCapturePattern.FULL_TWO_RINGS_WITH_CAPS) }) {
+                    Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                        Text("Full Room Sphere", fontWeight = FontWeight.Bold)
+                        Text("Two guided rotations + ceiling + floor • approximately 18–22 photos")
+                        Text(
+                            "Complete 360° × 180° coverage with fewer stitch transitions than the old 26-frame pattern.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }
 
 @Composable
@@ -376,7 +438,10 @@ private fun RoomTourCard(room: RoomDraft, onCapture: () -> Unit, onImport: () ->
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(room.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             Text(room.processingStatus)
-            if (room.localPhotos.isNotEmpty()) Text("${room.localPhotos.size} overlapping photos")
+            if (room.localPhotos.isNotEmpty()) {
+                Text("${room.localPhotos.size} guided photos")
+                room.panoramaCapturePattern?.let { Text(it.title) }
+            }
             if (room.panoramaFile != null) Text("Imported panorama: ${room.panoramaFile.name}")
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilledTonalButton(onClick = onCapture, modifier = Modifier.weight(1f)) {

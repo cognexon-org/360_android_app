@@ -10,6 +10,7 @@ import com.propertytour360.capture.data.AppPreferences
 import com.propertytour360.capture.model.AppUiState
 import com.propertytour360.capture.model.CaptureMode
 import com.propertytour360.capture.model.CaptureWorkspace
+import com.propertytour360.capture.model.PanoramaCaptureResult
 import com.propertytour360.capture.model.RoomDraft
 import com.propertytour360.capture.util.DesignModelBuilder
 import com.propertytour360.capture.util.ScanQualityEvaluator
@@ -115,13 +116,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(workspace = workspace.copy(rooms = workspace.rooms + updatedRoom), message = "$name added") }
     }
 
-    fun setRoomPhotos(roomId: String, files: List<File>) {
-        updateRoom(roomId) { it.copy(localPhotos = files, panoramaFile = null, processingStatus = "${files.size} photos ready") }
+    fun setRoomPhotos(roomId: String, result: PanoramaCaptureResult) {
+        updateRoom(roomId) {
+            it.copy(
+                localPhotos = result.files,
+                panoramaFile = null,
+                panoramaCapturePattern = result.pattern,
+                panoramaManifestFile = result.manifestFile,
+                panoramaFrames = result.frames,
+                panoramaHorizontalFovDegrees = result.horizontalFovDegrees,
+                panoramaVerticalFovDegrees = result.verticalFovDegrees,
+                panoramaMinPitchDegrees = result.minPitchDegrees,
+                panoramaMaxPitchDegrees = result.maxPitchDegrees,
+                processingStatus = "${result.pattern.title}: ${result.files.size} photos ready"
+            )
+        }
     }
 
     fun importPanorama(roomId: String, uri: Uri) = runAction {
         val file = copyUriToCache(uri, "panorama")
-        updateRoom(roomId) { it.copy(panoramaFile = file, localPhotos = emptyList(), processingStatus = "Panorama ready") }
+        updateRoom(roomId) {
+            it.copy(
+                panoramaFile = file,
+                localPhotos = emptyList(),
+                panoramaCapturePattern = null,
+                panoramaManifestFile = null,
+                panoramaFrames = emptyList(),
+                panoramaHorizontalFovDegrees = null,
+                panoramaVerticalFovDegrees = null,
+                panoramaMinPitchDegrees = null,
+                panoramaMaxPitchDegrees = null,
+                processingStatus = "Panorama ready"
+            )
+        }
         _state.update { it.copy(message = "Panorama imported") }
     }
 
@@ -138,14 +165,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             room.localPhotos.size >= 3 -> {
                 val jobId = repository.uploadRoomPhotosAndStitch(
-                    baseUrl, token, workspace.captureId, room.serverId, room.localPhotos
+                    baseUrl, token, workspace.captureId, room
                 ) { done, total ->
                     _state.update { it.copy(uploadProgress = "${room.name}: uploaded $done of $total") }
                 }
                 val job = repository.waitForJob(baseUrl, token, jobId)
                 if (job.status == "FAILED") error(job.error ?: "Panorama stitching failed")
+                val refreshedCapture = repository.getCapture(baseUrl, token, workspace.captureId)
+                val refreshedRoom = refreshedCapture.rooms.firstOrNull { it.id == room.serverId }
+                if (refreshedRoom?.panoramaAssetId == null) {
+                    error("Panorama QA rejected this room. Review capture stability and recapture.")
+                }
             }
-            else -> error("Capture at least 3 overlapping photos or import a 2:1 panorama")
+            else -> error("Complete a guided room capture or import a 2:1 panorama")
         }
         updateRoom(roomId) { it.copy(processingStatus = "Panorama approved/uploaded") }
         _state.update { it.copy(uploadProgress = null, message = "${room.name} processed") }
