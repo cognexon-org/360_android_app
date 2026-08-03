@@ -1,0 +1,6 @@
+Kotlin parser scan: PASS — no syntax/grammar diagnostics were reported.
+
+The standalone compiler was invoked over all source files without Android,
+Compose, ARCore, Retrofit or Gson dependency classpaths. Expected unresolved
+external-symbol diagnostics were produced, but no "expecting", "unclosed",
+"syntax error" or "unexpected tokens" diagnostics were found.

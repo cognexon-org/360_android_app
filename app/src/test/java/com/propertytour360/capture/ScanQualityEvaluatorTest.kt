@@ -10,7 +10,8 @@ class ScanQualityEvaluatorTest {
     @Test fun goodEvidencePasses() {
         val dir = Files.createTempDirectory("scan-quality").toFile()
         dir.resolve("intrinsics.json").writeText("{}")
-        dir.resolve("capture_summary.json").writeText("""{"poseCount":120,"planeSnapshotCount":8,"depthFrames":12,"durationSeconds":45}""")
+        dir.resolve("checksums.sha256").writeText("")
+        dir.resolve("capture_summary.json").writeText("""{"poseCount":120,"planeSnapshotCount":8,"verticalPlaneObservations":12,"floorPlaneObservations":2,"ceilingPlaneObservations":1,"depthFrames":12,"keyframeCount":18,"operatorMarkupCount":6,"durationSeconds":45}""")
         val report = ScanQualityEvaluator.evaluate(dir)
         assertEquals("GOOD_DRAFT", report.status)
         assertTrue(report.score >= 80)

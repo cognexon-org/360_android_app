@@ -1,0 +1,6 @@
+51/51 source contract checks passed
+
+Coverage includes application version, Mode A capture tuning and upload contract,
+RGB-D capture files, adaptive keyframes, centre-hit markups, floor/ceiling/stair/
+measurement proposals, field plans, measurement provenance, checksums, typed
+uploads, canonical schema 2.1, geometry request and draft-only handoff.

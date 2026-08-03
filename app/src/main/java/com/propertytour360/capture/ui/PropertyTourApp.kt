@@ -66,6 +66,10 @@ import com.propertytour360.capture.camera.PanoramaCaptureScreen
 import com.propertytour360.capture.model.CaptureMode
 import com.propertytour360.capture.model.PanoramaCapturePattern
 import com.propertytour360.capture.model.RoomDraft
+import com.propertytour360.capture.model.PlanPoint
+import com.propertytour360.capture.model.OpeningDraft
+import com.propertytour360.capture.model.MeasurementDraft
+import com.propertytour360.capture.model.RoomPlacement
 import java.io.File
 
 private data class PanoramaCaptureRequest(
@@ -146,6 +150,7 @@ fun PropertyTourApp(viewModel: MainViewModel) {
                     onUploadReference = viewModel::uploadModeARoom,
                     onSetArEvidence = viewModel::setArEvidence,
                     onSaveMeasurements = viewModel::saveMeasurements,
+                    onSaveRoomPlan = viewModel::saveRoomPlan,
                     onUploadEvidence = viewModel::uploadArEvidence,
                     onPublish = viewModel::submitDesignScan
                 )
@@ -469,6 +474,7 @@ private fun ModeBWorkspaceScreen(
     onUploadReference: (String) -> Unit,
     onSetArEvidence: (String, File, Boolean) -> Unit,
     onSaveMeasurements: (String, Double, Double, Double, Double?, Double?, Double?, Double?) -> Unit,
+    onSaveRoomPlan: (String, List<PlanPoint>, Double, List<OpeningDraft>, List<MeasurementDraft>, RoomPlacement) -> Unit,
     onUploadEvidence: (String) -> Unit,
     onPublish: (String) -> Unit
 ) {
@@ -476,6 +482,7 @@ private fun ModeBWorkspaceScreen(
     val context = LocalContext.current
     var roomName by remember { mutableStateOf("") }
     var measurementRoom by remember { mutableStateOf<RoomDraft?>(null) }
+    var planRoom by remember { mutableStateOf<RoomDraft?>(null) }
     var arRoomId by remember { mutableStateOf<String?>(null) }
     var importRoomId by remember { mutableStateOf<String?>(null) }
     var projectName by remember { mutableStateOf("${workspace.propertyName} design shell") }
@@ -505,16 +512,20 @@ private fun ModeBWorkspaceScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             item {
-                Text("ARCore is optional", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                Text("Use AR scan when supported, then confirm wall lengths and ceiling height. Manual/laser dimensions remain the source of truth.")
+                Text("Guided RGB-D Design Scan", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Text("Scan walls, corners and openings, upload the evidence package, then confirm critical dimensions. The result is a draft for Designer Studio correction—not a construction survey.")
             }
             items(workspace.rooms, key = { it.serverId }) { room ->
                 Card {
                     Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(room.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                         Text(room.processingStatus)
-                        Text(if (room.depthSupported) "Raw Depth supported" else "Depth unavailable or not scanned")
-                        room.lengthM?.let { Text("Confirmed shell: ${room.lengthM}m × ${room.widthM}m × ${room.heightM}m") }
+                        Text(if (room.depthSupported) "Dense/Raw Depth capture supported" else "RGB/AR fallback or not scanned")
+                        room.lengthM?.let { Text("Confirmed shell bounds: ${"%.2f".format(room.lengthM)}m × ${"%.2f".format(room.widthM)}m × ${room.heightM}m") }
+                        if (room.floorPolygon.size >= 3) {
+                            Text("Field plan: ${room.floorPolygon.size} vertices • ${room.openings.size} openings • ${room.measurements.size} measurements")
+                            Text("Placement: ${room.placement.floorId} • origin ${"%.2f".format(room.placement.originXM)}, ${"%.2f".format(room.placement.originZM)} • rotation ${"%.1f".format(room.placement.rotationDegrees)}°", style = MaterialTheme.typography.bodySmall)
+                        }
                         Button(
                             onClick = {
                                 arRoomId = room.serverId
@@ -523,13 +534,20 @@ private fun ModeBWorkspaceScreen(
                                 arLauncher.launch(intent)
                             },
                             modifier = Modifier.fillMaxWidth()
-                        ) { Text("Run ARCore pose/depth scan") }
-                        FilledTonalButton(onClick = { measurementRoom = room }, modifier = Modifier.fillMaxWidth()) {
-                            Text("Confirm room measurements")
+                        ) { Text("Run guided RGB-D room scan") }
+                        FilledTonalButton(onClick = { planRoom = room }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Create / edit field plan")
+                        }
+                        OutlinedButton(onClick = { measurementRoom = room }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Quick rectangular measurements")
                         }
                         if (room.arEvidenceDir != null) {
-                            OutlinedButton(onClick = { onUploadEvidence(room.serverId) }, modifier = Modifier.fillMaxWidth()) {
-                                Text("Upload AR evidence")
+                            OutlinedButton(
+                                onClick = { onUploadEvidence(room.serverId) },
+                                enabled = !room.evidenceUploaded && room.floorPolygon.size >= 3 && room.heightM != null,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(if (room.evidenceUploaded) "Evidence uploaded" else if (room.floorPolygon.size < 3) "Confirm field plan before upload" else "Upload Capture Package v2.1")
                             }
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -553,13 +571,24 @@ private fun ModeBWorkspaceScreen(
                     OutlinedTextField(projectName, { projectName = it }, label = { Text("Design project name") }, modifier = Modifier.fillMaxWidth())
                     Button(
                         onClick = { onPublish(projectName) },
-                        enabled = workspace.rooms.all { it.lengthM != null && it.widthM != null && it.heightM != null },
+                        enabled = workspace.rooms.all { it.lengthM != null && it.widthM != null && it.heightM != null && (it.arEvidenceDir == null || it.evidenceUploaded) },
                         modifier = Modifier.fillMaxWidth()
-                    ) { Text("Generate and publish editable room shell") }
-                    workspace.publicUrl?.let { Text("Published: $it", color = MaterialTheme.colorScheme.primary) }
+                    ) { Text("Create draft for Designer Studio") }
+                    workspace.publicUrl?.let { Text("Designer Studio: $it", color = MaterialTheme.colorScheme.primary) }
                 }
             }
         }
+    }
+
+    planRoom?.let { room ->
+        ModeBPlanEditorDialog(
+            room = room,
+            onDismiss = { planRoom = null },
+            onSave = { polygon, height, openings, measurements, placement ->
+                onSaveRoomPlan(room.serverId, polygon, height, openings, measurements, placement)
+                planRoom = null
+            }
+        )
     }
 
     measurementRoom?.let { room ->

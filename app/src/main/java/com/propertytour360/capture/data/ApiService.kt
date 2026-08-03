@@ -130,6 +130,19 @@ interface ApiService {
         @Path("projectId") projectId: String
     ): JobResponse
 
+    /**
+     * Registers the manifest + archive pair as a Capture Package v2 and starts
+     * server-side checksum validation. Without this call the archive sits in
+     * object storage as an unlinked asset and geometry generation has nothing
+     * to read, which is why Mode B scans previously never produced a model.
+     */
+    @POST("v2/captures/{captureId}/packages/finalize")
+    suspend fun finalizeCapturePackages(
+        @Header("Authorization") authorization: String,
+        @Path("captureId") captureId: String,
+        @Body body: FinalizePackagesBody
+    ): FinalizePackagesResponse
+
     @POST("v1/design-projects/{projectId}/publish")
     suspend fun publishDesign(
         @Header("Authorization") authorization: String,

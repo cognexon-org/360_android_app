@@ -6,7 +6,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DesignModelBuilderTest {
-    @Test fun rectangularRoomHasFourWallsAndOpenings() {
+    @Test fun rectangularRoomHasFourWallsAndUnplacedOpeningProposals() {
         val model = DesignModelBuilder.buildRoomModel(
             id = "living",
             name = "Living room",
@@ -21,5 +21,6 @@ class DesignModelBuilderTest {
         val walls = model["walls"] as List<*>
         assertEquals(4, walls.size)
         assertTrue((model["floorPolygon"] as List<*>).size == 4)
+        assertEquals(2, (model["unplacedOpenings"] as List<*>).size)
     }
 }

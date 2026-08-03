@@ -1,0 +1,9 @@
+A full Gradle build could not run in this offline environment.
+
+The supplied working baseline omits gradle/wrapper/gradle-wrapper.jar. Its
+custom wrapper script attempted to retrieve the JAR from raw.githubusercontent.com,
+but DNS/network access is unavailable here.
+
+Run in Android Studio or connected CI:
+
+./gradlew clean test assembleDebug

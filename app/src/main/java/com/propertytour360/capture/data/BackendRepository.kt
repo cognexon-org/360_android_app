@@ -44,7 +44,7 @@ class BackendRepository(
             "manufacturer" to Build.MANUFACTURER,
             "model" to Build.MODEL,
             "sdk" to Build.VERSION.SDK_INT,
-            "appVersion" to "2.1.0"
+            "appVersion" to "3.1.0"
         )
         return serviceProvider(baseUrl).createCapture(
             bearer(token),
@@ -176,6 +176,14 @@ class BackendRepository(
         error("Timed out waiting for panorama quality check")
     }
 
+    suspend fun finalizeCapturePackages(
+        baseUrl: String,
+        token: String,
+        captureId: String,
+        rooms: List<FinalizePackageRoom>
+    ): FinalizePackagesResponse =
+        serviceProvider(baseUrl).finalizeCapturePackages(bearer(token), captureId, FinalizePackagesBody(rooms))
+
     suspend fun submitCapture(baseUrl: String, token: String, captureId: String) =
         serviceProvider(baseUrl).submitCapture(bearer(token), captureId)
 
@@ -217,12 +225,10 @@ class BackendRepository(
         captureId: String,
         name: String,
         model: Map<String, Any>
-    ): Pair<DesignProjectDto, String> {
-        val api = serviceProvider(baseUrl)
-        val project = api.createDesignProject(bearer(token), DesignProjectCreateBody(captureId, name, model))
-        val job = api.generateShell(bearer(token), project.id)
-        return project to job.jobId
-    }
+    ): DesignProjectDto = serviceProvider(baseUrl).createDesignProject(
+        bearer(token),
+        DesignProjectCreateBody(captureId = captureId, name = name, model = model, generateGeometry = true)
+    )
 
     suspend fun publishDesign(baseUrl: String, token: String, projectId: String): PublishDesignResponse =
         serviceProvider(baseUrl).publishDesign(bearer(token), projectId)

@@ -67,6 +67,10 @@ data class RoomDraft(
     val lengthM: Double? = null,
     val widthM: Double? = null,
     val heightM: Double? = null,
+    val floorPolygon: List<PlanPoint> = emptyList(),
+    val openings: List<OpeningDraft> = emptyList(),
+    val measurements: List<MeasurementDraft> = emptyList(),
+    val placement: RoomPlacement = RoomPlacement(),
     val doorWidthM: Double? = null,
     val doorHeightM: Double? = null,
     val windowWidthM: Double? = null,
@@ -74,7 +78,8 @@ data class RoomDraft(
     val arEvidenceDir: File? = null,
     val depthSupported: Boolean = false,
     val scanQualityScore: Int? = null,
-    val scanQualityStatus: String = "Not evaluated"
+    val scanQualityStatus: String = "Not evaluated",
+    val evidenceUploaded: Boolean = false
 )
 
 data class CaptureWorkspace(

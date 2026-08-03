@@ -1,155 +1,114 @@
-# PropertyTour360 Android Capture v2.1
+# PropertyTour360 Android Capture v3.1.0
 
-Native Kotlin Android application containing both capture modes:
+Native Kotlin Android application containing both capture modes.
 
-- **Mode A — Property Tour:** room-by-room connected panorama capture for brokers, landlords and property operators.
-- **Mode B — Design Scan:** ARCore poses, planes and Raw Depth where supported, plus mandatory manual/laser measurement confirmation for an editable parametric room shell.
+- **Mode A — Property Tour:** the latest working guided panorama implementation from the supplied `360_android_app-main (1).zip` is retained without feature rollback.
+- **Mode B — Design Scan:** synchronized RGB-D evidence capture, field-plan correction, measurement provenance and draft handoff to the unified PropertyTour360 backend and Designer Studio.
 
-The project is designed for the separately supplied `PropertyTour360_Backend_v1.0` Node/Python backend.
+## Mode A preservation
 
-## Why native Kotlin instead of Flutter
+This release was rebased on the user's latest working Android repository. The following Mode A source files are byte-for-byte identical to that baseline:
 
-Mode A can be implemented with Flutter, but Mode B needs direct control of ARCore sessions, Raw Depth frames, confidence images, camera intrinsics, OpenGL camera rendering and device capability fallbacks. This project uses Google's native Android APIs to avoid depending on incomplete or abandoned Flutter AR wrappers.
+- `CameraFovEstimator.kt`
+- `OrientationTracker.kt`
+- `PanoramaCaptureScreen.kt`
 
-## Implemented app flows
+The complete `uploadRoomPhotosAndStitch()` repository function and the Mode A Compose workspace are also identical to the supplied working baseline. This retains:
 
-### Authentication and server setup
+- 40% overlap / 10–16 positions per ring
+- tighter 3.5° capture alignment
+- exposure and white-balance lock after the first frame
+- measured yaw, pitch and roll metadata
+- the existing panorama manifest asset contract
+- pose-aware stitching request and server QA workflow
+- imported equirectangular panorama support
+- room graph validation and tour publishing
 
-- Configurable backend URL
-- Development OTP request and verification
-- JWT token storage through DataStore
-- Local HTTP support for LAN development
+See `MODE_A_PRESERVATION.md` and `CHANGES_MODE_A_STITCHING_v2_2.md`.
 
-### Mode A — Property Tour
+## Mode B v3.1 implementation
 
-1. Create a property, unit and capture session.
-2. Add named rooms in walking order.
-3. The app automatically creates room-to-room connections between consecutive rooms.
-4. For each room, either:
-   - choose **Quick Room View**: one central guided ring using approximately 8–10 auto-captured normal-camera photos; or
-   - choose **Full Room Sphere**: an upper ring, lower ring, ceiling and floor using approximately 18–22 auto-captured photos; or
-   - import a JPEG equirectangular panorama made by the phone/camera.
-5. Upload directly to MinIO through the backend's presigned URL.
-6. Ask the Python worker to stitch/validate the panorama.
-7. Validate the room graph.
-8. Create a tour, add basic room hotspots and publish the public manifest.
+### Guided AR/RGB-D capture
 
-### Mode B — Design Scan (improved v2.0)
+- ARCore `AUTOMATIC` Depth where supported, with Raw Depth and confidence evidence
+- synchronized CPU RGB keyframes, camera pose and intrinsics
+- dense and raw depth timestamps with stale-frame filtering
+- adaptive translation, rotation and time-based keyframes
+- horizontal and vertical plane observations
+- centre-reticle AR hit proposals for corners, doors, windows, passages, floors, ceilings, stairs, level changes and measurement endpoints
+- device, application, rotation, tracking and evidence metadata
+- capture summary, manifest and SHA-256 checksums
 
-1. Create a Design Scan capture session and add rooms.
-2. Run the native ARCore scanner where ARCore is available.
-3. Record:
-   - camera poses as JSON Lines;
-   - camera intrinsics;
-   - detected horizontal/vertical planes;
-   - Raw Depth 16-bit buffers and confidence buffers when supported;
-   - capture summary and stride metadata.
-4. Confirm length, width, ceiling height, door and window dimensions manually.
-5. Upload AR evidence and optional reference panoramas.
-6. Build a clean rectangular parametric room model.
-7. Submit the capture, create a design project, generate a GLB shell through the Python service and publish a design concept.
+### Field-plan workflow
 
-## Important limitations
+- rectangular, L-shaped and free-polygon room plans
+- draggable vertices and polygon validation
+- multiple wall-attached doors, windows and open passages
+- opening offsets, sizes, sill height and optional swing/direction
+- ceiling-height confirmation
+- tape, laser, AR-assisted and manual measurement provenance
+- measurement tolerance, endpoints, device and evidence references
+- floor ID, elevation, origin, rotation and doorway/connection anchor metadata
+- quick rectangular fallback for basic devices and operators
 
-- Quick Room View minimizes stitch transitions and is the recommended default when full ceiling/floor coverage is unnecessary.
-- Full Room Sphere uses two consistent pitch rings plus ceiling and floor instead of the old 26-target sphere. Stitching can still show parallax in mirrors, moving scenes, very close furniture or when the phone moves away from the capture point.
-- Raw Depth is optional and sparse. Not every ARCore phone supports it, and not every frame contains a new depth image.
-- Mode B output is a **draft design shell**, not a survey or structural model.
-- Manual or laser-confirmed dimensions are required before a designer relies on the model.
-- Every wall is exported with `structuralStatus = UNKNOWN`. The app never claims that a wall can safely be removed.
-- The app currently creates new property/unit records for each new workspace. A later seller-dashboard release should add selection of existing inventory and unfinished drafts.
+### Capture Package v2.1
+
+A scanned and field-confirmed room contains:
+
+```text
+manifest.json
+checksums.sha256
+capture_summary.json
+intrinsics.json
+poses.jsonl
+planes.jsonl
+keyframes.jsonl
+operator-markups.jsonl
+field-plan.json
+measurements.json
+keyframes/{id}/
+  rgb.jpg
+  metadata.json
+  depth_dense.depth16       # when available
+  depth_raw.depth16         # when available
+  confidence.confidence8    # when available
+```
+
+The app verifies the checksum manifest before upload and registers primary files using typed asset kinds. An immutable ZIP copy is also uploaded as `MODEL_EVIDENCE`.
+
+### Trust and publishing rules
+
+- Android creates a draft design project only.
+- Android does not publish a Mode B project publicly.
+- Sensor and operator geometry is labelled as a draft requiring Designer Studio review.
+- Editing a field plan invalidates the previous evidence-upload state and requires re-upload.
+- Structural status remains unknown until appropriately verified.
+
+## Unified backend target
+
+Mode B targets the new combined backend that will be generated after this app. It does not contain compatibility branches for an obsolete Mode B backend. Mode A keeps the working API contract from the supplied repository.
+
+See `MODE_B_V2_INTEGRATION_CONTRACT.md` for the exact expected contract.
 
 ## Requirements
 
-- Android Studio with Android SDK 36
-- JDK 17; Android Studio's bundled JDK is suitable
+- Android Studio
+- Android SDK 36
+- JDK 17
 - Android 7.0/API 24 or later
-- A physical ARCore-supported device for Mode B scanning
-- Mode A camera capture works on ordinary Android camera phones
-- PropertyTour360 backend running on the same Wi-Fi or a public HTTPS domain
+- A physical ARCore-supported device for sensor-assisted Mode B capture
+- Ordinary Android camera phones remain supported for Mode A
 
-## Open in Android Studio
-
-1. Extract the ZIP.
-2. Open the `PropertyTour360_Android_v1` folder in Android Studio.
-3. Allow Gradle sync to finish.
-4. Install SDK 36 if Android Studio asks.
-5. Connect an Android phone with USB debugging enabled.
-6. Select the phone and press **Run**.
-
-The included wrapper script downloads its small Gradle wrapper JAR on first use, then Gradle downloads the configured Gradle distribution and dependencies.
-
-## Connect to the local backend
-
-Start the backend:
+## Build
 
 ```bash
-cd PropertyTour360_Backend_v1
-cp .env.example .env
-docker compose up --build
+./gradlew clean test assembleDebug
 ```
 
-For the Android emulator, use:
-
-```text
-http://10.0.2.2:3000/
-```
-
-For a physical phone, find the Mac/Windows computer's LAN IP, for example `192.168.1.20`, and use:
-
-```text
-http://192.168.1.20:3000/
-```
-
-The backend `.env` should also expose MinIO presigned URLs through the same LAN address:
-
-```text
-MINIO_PRESIGN_ENDPOINT=192.168.1.20
-MINIO_PUBLIC_BASE_URL=http://192.168.1.20:9000/propertytour-public
-```
-
-Restart the backend after changing `.env`.
-
-## Build from Terminal
-
-macOS/Linux:
-
-```bash
-./gradlew assembleDebug
-```
-
-Windows:
-
-```powershell
-.\gradlew.bat assembleDebug
-```
-
-APK location:
+APK output:
 
 ```text
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
-## ARCore privacy notice
-
-The AR scan screen includes the required user-facing notice that the feature runs on Google Play Services for AR. Add your own complete privacy policy, consent screens, retention rules and data deletion flow before production use.
-
-## Main source folders
-
-```text
-app/src/main/java/com/propertytour360/capture/
-├── ar/       ARCore/OpenGL scanner and evidence recorder
-├── camera/   CameraX panorama direction capture
-├── data/     Retrofit backend client and upload workflow
-├── model/    App and capture state
-├── ui/       Compose screens and view model
-└── util/     Angle and parametric model builders
-```
-
-## Official technical references
-
-- ARCore optional app setup: https://developers.google.com/ar/develop/java/enable-arcore
-- Raw Depth for Android: https://developers.google.com/ar/develop/java/depth/raw-depth
-- ARCore supported devices: https://developers.google.com/ar/devices
-- CameraX: https://developer.android.com/media/camera/camerax
-- Jetpack Compose: https://developer.android.com/compose
+The supplied source repository does not include `gradle-wrapper.jar`; restore/regenerate the wrapper in Android Studio or CI before command-line builds.

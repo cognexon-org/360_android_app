@@ -131,6 +131,15 @@ data class HotspotBody(
 )
 data class PublishTourResponse(val publicUrl: String, val manifestUrl: String)
 
-data class DesignProjectCreateBody(val captureId: String, val name: String, val model: Map<String, Any>)
-data class DesignProjectDto(val id: String, val slug: String, val status: String, val name: String)
+data class DesignProjectCreateBody(val captureId: String, val name: String, val model: Map<String, Any>? = null, val generateGeometry: Boolean = true)
+data class DesignProjectDto(val id: String, val slug: String, val status: String, val name: String, val geometryJobId: String? = null, val geometryStatus: String? = null, val verificationStatus: String? = null)
 data class PublishDesignResponse(val publicUrl: String)
+data class FinalizePackageRoom(
+    val roomId: String,
+    val manifestAssetId: String,
+    val archiveAssetId: String
+)
+
+data class FinalizePackagesBody(val rooms: List<FinalizePackageRoom>)
+
+data class FinalizePackagesResponse(val jobId: String, val packageCount: Int)

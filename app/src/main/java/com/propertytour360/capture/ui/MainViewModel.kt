@@ -2,18 +2,25 @@ package com.propertytour360.capture.ui
 
 import android.app.Application
 import android.net.Uri
+import android.os.Build
 import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.propertytour360.capture.PropertyTourApplication
 import com.propertytour360.capture.data.AppPreferences
+import com.propertytour360.capture.data.FinalizePackageRoom
 import com.propertytour360.capture.model.AppUiState
 import com.propertytour360.capture.model.CaptureMode
 import com.propertytour360.capture.model.CaptureWorkspace
 import com.propertytour360.capture.model.PanoramaCaptureResult
 import com.propertytour360.capture.model.RoomDraft
+import com.propertytour360.capture.model.PlanPoint
+import com.propertytour360.capture.model.OpeningDraft
+import com.propertytour360.capture.model.MeasurementDraft
+import com.propertytour360.capture.model.RoomPlacement
 import com.propertytour360.capture.util.DesignModelBuilder
 import com.propertytour360.capture.util.ScanQualityEvaluator
+import com.propertytour360.capture.util.ModeBCapturePackage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -212,10 +219,90 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 depthSupported = depthSupported,
                 scanQualityScore = report.score,
                 scanQualityStatus = report.status,
-                processingStatus = "AR scan ${report.status.lowercase().replace('_', ' ')} (${report.score}/100)"
+                processingStatus = "AR scan ${report.status.lowercase().replace('_', ' ')} (${report.score}/100)",
+                evidenceUploaded = false
             )
         }
         _state.update { it.copy(message = if (report.issues.isEmpty()) "AR scan quality passed" else report.issues.joinToString(" • ")) }
+    }
+
+    fun saveRoomPlan(
+        roomId: String,
+        polygon: List<PlanPoint>,
+        heightM: Double,
+        openings: List<OpeningDraft>,
+        measurements: List<MeasurementDraft>,
+        placement: RoomPlacement
+    ) = runAction {
+        require(polygon.size in 3..32) { "A room polygon must contain 3–32 vertices" }
+        require(heightM in 1.8..8.0) { "Ceiling height must be between 1.8 m and 8 m" }
+        require(kotlin.math.abs(polygonArea(polygon)) >= 0.5) { "Room polygon area is too small" }
+        require(!hasSelfIntersection(polygon)) { "Room polygon self-intersects" }
+        val workspace = requireWorkspace()
+        val room = workspace.rooms.first { it.serverId == roomId }
+        openings.forEach { opening ->
+            require(opening.wallIndex in polygon.indices) { "Opening is attached to an invalid wall" }
+            val a = polygon[opening.wallIndex]; val b = polygon[(opening.wallIndex + 1) % polygon.size]
+            val wallLength = kotlin.math.hypot(b.xM - a.xM, b.zM - a.zM)
+            require(opening.widthM > 0.1 && opening.offsetM >= 0.0 && opening.offsetM + opening.widthM <= wallLength + 0.001) {
+                "${opening.type} does not fit on wall ${opening.wallIndex + 1}"
+            }
+        }
+        val evidenceRef = room.arEvidenceDir?.name
+        val normalizedMeasurements = measurements.map { measurement ->
+            measurement.copy(
+                deviceManufacturer = measurement.deviceManufacturer ?: Build.MANUFACTURER,
+                deviceModel = measurement.deviceModel ?: Build.MODEL,
+                evidenceRefs = if (measurement.evidenceRefs.isNotEmpty()) measurement.evidenceRefs else listOfNotNull(evidenceRef)
+            )
+        }
+        val updated = room.copy(
+            floorPolygon = polygon,
+            heightM = heightM,
+            openings = openings,
+            measurements = normalizedMeasurements,
+            placement = placement,
+            lengthM = polygon.maxOf { it.xM } - polygon.minOf { it.xM },
+            widthM = polygon.maxOf { it.zM } - polygon.minOf { it.zM },
+            processingStatus = "Field plan confirmed (${polygon.size} vertices, ${openings.size} openings)",
+            evidenceUploaded = false
+        )
+        val token = requireToken()
+        val roomModel = DesignModelBuilder.buildRoomModel(updated)
+        repository.patchRoom(
+            requireBaseUrl(), token, workspace.captureId, roomId,
+            mapOf(
+                "ceilingHeightM" to heightM,
+                "floorPolygon" to polygon.map { listOf(it.xM, it.zM) },
+                "measurements" to normalizedMeasurements.map { mapOf(
+                    "id" to it.id, "label" to it.label, "valueM" to it.valueM, "unit" to "m",
+                    "method" to it.method, "toleranceM" to it.toleranceM,
+                    "start" to it.start?.let { p -> listOf(p.xM, p.zM) },
+                    "end" to it.end?.let { p -> listOf(p.xM, p.zM) },
+                    "verified" to it.verified, "verificationStatus" to it.verificationStatus,
+                    "operatorId" to it.operatorId, "deviceManufacturer" to it.deviceManufacturer,
+                    "deviceModel" to it.deviceModel, "evidenceRefs" to it.evidenceRefs,
+                    "notes" to it.notes, "capturedAtEpochMs" to it.capturedAtEpochMs
+                ) },
+                "openings" to openings.map { opening -> mapOf(
+                    "id" to opening.id, "type" to opening.type.name, "wallIndex" to opening.wallIndex,
+                    "offsetM" to opening.offsetM, "widthM" to opening.widthM, "heightM" to opening.heightM,
+                    "sillM" to opening.sillM, "swing" to opening.swing, "confidence" to opening.confidence,
+                    "source" to opening.source
+                ) },
+                "roomPlacement" to mapOf(
+                    "floorId" to placement.floorId, "elevationM" to placement.elevationM,
+                    "originXM" to placement.originXM, "originZM" to placement.originZM,
+                    "rotationDegrees" to placement.rotationDegrees,
+                    "connectionAnchorId" to placement.connectionAnchorId,
+                    "connectionConfidence" to placement.connectionConfidence
+                ),
+                "roomModel" to roomModel
+            )
+        )
+        updated.arEvidenceDir?.let { directory -> ModeBCapturePackage.attachFieldPlan(directory, updated) }
+        updateRoom(roomId) { updated }
+        _state.update { it.copy(message = "Room polygon, openings and measurements saved; evidence must be uploaded again after edits") }
     }
 
     fun saveMeasurements(
@@ -227,48 +314,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         doorHeightM: Double?,
         windowWidthM: Double?,
         windowHeightM: Double?
-    ) = runAction {
-        require(lengthM in 0.5..30.0 && widthM in 0.5..30.0) { "Room length and width must be between 0.5 m and 30 m" }
-        require(heightM in 1.8..8.0) { "Ceiling height must be between 1.8 m and 8 m" }
-        require(doorWidthM == null || doorWidthM in 0.45..3.5) { "Door width is outside a plausible range" }
-        require(doorHeightM == null || doorHeightM in 1.5..4.0) { "Door height is outside a plausible range" }
-        require(windowWidthM == null || windowWidthM in 0.2..8.0) { "Window width is outside a plausible range" }
-        require(windowHeightM == null || windowHeightM in 0.2..4.0) { "Window height is outside a plausible range" }
-        val workspace = requireWorkspace()
-        val token = requireToken()
-        val floor = listOf(
-            listOf(0.0, 0.0), listOf(lengthM, 0.0),
-            listOf(lengthM, widthM), listOf(0.0, widthM)
-        )
-        val measurements = mapOf(
-            "lengthM" to lengthM,
-            "widthM" to widthM,
-            "confirmedByUser" to true,
-            "measurementMethod" to "manual_or_laser"
-        )
-        val roomModel = DesignModelBuilder.buildRoomModel(
-            roomId, workspace.rooms.first { it.serverId == roomId }.name,
-            lengthM, widthM, heightM,
-            doorWidthM, doorHeightM, windowWidthM, windowHeightM
-        )
-        repository.patchRoom(
-            requireBaseUrl(), token, workspace.captureId, roomId,
-            mapOf(
-                "ceilingHeightM" to heightM,
-                "floorPolygon" to floor,
-                "measurements" to measurements,
-                "roomModel" to roomModel
-            )
-        )
-        updateRoom(roomId) {
-            it.copy(
-                lengthM = lengthM, widthM = widthM, heightM = heightM,
-                doorWidthM = doorWidthM, doorHeightM = doorHeightM,
-                windowWidthM = windowWidthM, windowHeightM = windowHeightM,
-                processingStatus = "Measurements confirmed"
-            )
+    ) {
+        val polygon = DesignModelBuilder.rectangle(lengthM, widthM)
+        val openings = buildList {
+            if (doorWidthM != null && doorHeightM != null) add(OpeningDraft(type = com.propertytour360.capture.model.OpeningType.DOOR, wallIndex = 0, offsetM = 0.2, widthM = doorWidthM, heightM = doorHeightM))
+            if (windowWidthM != null && windowHeightM != null) add(OpeningDraft(type = com.propertytour360.capture.model.OpeningType.WINDOW, wallIndex = 1, offsetM = 0.2, widthM = windowWidthM, heightM = windowHeightM))
         }
-        _state.update { it.copy(message = "Measurements saved") }
+        val measurements = listOf(
+            MeasurementDraft(label = "Room length", valueM = lengthM, method = "MANUAL_OR_LASER", toleranceM = 0.01, start = polygon[0], end = polygon[1]),
+            MeasurementDraft(label = "Room width", valueM = widthM, method = "MANUAL_OR_LASER", toleranceM = 0.01, start = polygon[1], end = polygon[2]),
+            MeasurementDraft(label = "Ceiling height", valueM = heightM, method = "MANUAL_OR_LASER", toleranceM = 0.01)
+        )
+        saveRoomPlan(roomId, polygon, heightM, openings, measurements, RoomPlacement())
+    }
+
+    private fun polygonArea(points: List<PlanPoint>): Double = points.indices.sumOf { i ->
+        val a = points[i]; val b = points[(i + 1) % points.size]; a.xM * b.zM - b.xM * a.zM
+    } / 2.0
+
+    private fun hasSelfIntersection(points: List<PlanPoint>): Boolean {
+        fun ccw(a: PlanPoint, b: PlanPoint, c: PlanPoint) = (c.zM-a.zM)*(b.xM-a.xM) > (b.zM-a.zM)*(c.xM-a.xM)
+        fun intersects(a: PlanPoint, b: PlanPoint, c: PlanPoint, d: PlanPoint) = ccw(a,c,d) != ccw(b,c,d) && ccw(a,b,c) != ccw(a,b,d)
+        for (i in points.indices) for (j in i + 1 until points.size) {
+            if (j == i || j == (i + 1) % points.size || i == (j + 1) % points.size) continue
+            if (intersects(points[i], points[(i+1)%points.size], points[j], points[(j+1)%points.size])) return true
+        }
+        return false
     }
 
     fun uploadArEvidence(roomId: String) = runAction {
@@ -277,50 +348,88 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val dir = room.arEvidenceDir ?: error("Run AR scan first")
         val token = requireToken()
         val base = requireBaseUrl()
-        val files = dir.walkTopDown().filter { it.isFile }.toList()
-        val poses = files.firstOrNull { it.name == "poses.jsonl" }
-        val intrinsics = files.firstOrNull { it.name == "intrinsics.json" }
-        poses?.let { repository.uploadFile(base, token, workspace.captureId, roomId, "AR_POSES", it, "application/x-ndjson") }
-        intrinsics?.let { repository.uploadFile(base, token, workspace.captureId, roomId, "CAMERA_INTRINSICS", it, "application/json") }
-        val archive = zipDirectory(dir, "${room.name.replace(' ', '_')}_ar_evidence.zip")
-        repository.uploadFile(base, token, workspace.captureId, roomId, "OTHER", archive, "application/zip")
-        updateRoom(roomId) { it.copy(processingStatus = "AR evidence uploaded") }
-        _state.update { it.copy(message = "AR evidence uploaded") }
+        require(room.floorPolygon.size >= 3 && room.heightM != null) { "Confirm the field plan and ceiling height before uploading evidence" }
+        ModeBCapturePackage.attachFieldPlan(dir, room)
+        val checksumProblems = ModeBCapturePackage.verifyChecksums(dir)
+        require(checksumProblems.isEmpty()) { checksumProblems.joinToString(" • ") }
+        require(File(dir, "manifest.json").exists()) { "Capture Package v2 manifest is missing" }
+
+        // Capture Package v2 is a SINGLE archive plus its manifest.
+        //
+        // The previous implementation walked the evidence directory and uploaded
+        // every file individually — up to ~310 files for a 60-keyframe room
+        // (rgb.jpg + metadata.json + two depth maps + confidence per keyframe).
+        // Each upload is two API calls (presign + complete), so one room issued
+        // ~620 requests in a burst and tripped the rate limiter with
+        // "Rate limit exceeded, retry in 36 seconds".
+        //
+        // Every one of those files is already inside the archive, so the loop was
+        // pure duplication: the same bytes were stored twice in MinIO, and the
+        // backend's /v2/.../packages/finalize contract only ever consumes the
+        // manifest asset and the archive asset. Uploading just those two takes
+        // four requests and transfers less data, because the zip is compressed.
+        _state.update { it.copy(uploadProgress = "Packaging Mode B evidence") }
+        val archive = zipDirectory(dir, "${room.name.replace(' ', '_')}_capture_package_v2.zip")
+
+        _state.update { it.copy(uploadProgress = "Uploading capture manifest") }
+        val manifestAsset = repository.uploadFile(
+            base, token, workspace.captureId, roomId,
+            "CAPTURE_MANIFEST", File(dir, "manifest.json"), "application/json"
+        )
+
+        _state.update {
+            it.copy(uploadProgress = "Uploading evidence archive (${archive.length() / (1024 * 1024)} MB)")
+        }
+        val archiveAsset = repository.uploadFile(
+            base, token, workspace.captureId, roomId,
+            "MODEL_EVIDENCE", archive, "application/zip"
+        )
+
+        // Register the pair as a capture package so the server can verify the
+        // checksums inside the archive and start geometry processing.
+        _state.update { it.copy(uploadProgress = "Finalizing capture package") }
+        repository.finalizeCapturePackages(
+            base, token, workspace.captureId,
+            listOf(
+                FinalizePackageRoom(
+                    roomId = roomId,
+                    manifestAssetId = manifestAsset.id,
+                    archiveAssetId = archiveAsset.id
+                )
+            )
+        )
+
+        updateRoom(roomId) { it.copy(processingStatus = "Capture Package v2 uploaded", evidenceUploaded = true) }
+        _state.update { it.copy(uploadProgress = null, message = "RGB-D evidence package uploaded") }
     }
 
     fun submitDesignScan(projectName: String) = runAction {
         val workspace = requireWorkspace()
         require(workspace.mode == CaptureMode.DESIGN_SCAN)
         require(workspace.rooms.isNotEmpty()) { "Add at least one room" }
-        require(workspace.rooms.all { it.lengthM != null && it.widthM != null && it.heightM != null }) {
-            "Confirm dimensions for every room"
-        }
+        require(workspace.rooms.all { it.lengthM != null && it.widthM != null && it.heightM != null }) { "Confirm dimensions for every room" }
+        require(workspace.rooms.filter { it.arEvidenceDir != null }.all { it.evidenceUploaded }) { "Upload the captured RGB-D evidence for every scanned room" }
         val weakScans = workspace.rooms.filter { it.arEvidenceDir != null && (it.scanQualityScore ?: 0) < 55 }
-        require(weakScans.isEmpty()) {
-            "Rescan recommended for: ${weakScans.joinToString { it.name }}. Alternatively remove the weak AR evidence and use the measured manual path."
-        }
-        val token = requireToken()
-        val base = requireBaseUrl()
+        require(weakScans.isEmpty()) { "Rescan recommended for: ${weakScans.joinToString { it.name }}" }
+        val token = requireToken(); val base = requireBaseUrl()
         val submit = repository.submitCapture(base, token, workspace.captureId)
+        _state.update { it.copy(uploadProgress = "Validating Mode B capture") }
         val validation = repository.waitForJob(base, token, submit.jobId)
         if (validation.status == "FAILED") error(validation.error ?: "Capture validation failed")
         val capture = repository.getCapture(base, token, workspace.captureId)
-        if (capture.status != "READY") error("Design capture is ${capture.status}; review room measurements and connectivity")
+        if (capture.status != "READY") error("Design capture is ${capture.status}; review measurements and evidence")
         val model = DesignModelBuilder.buildProjectModel(workspace.rooms)
-        val (project, shellJobId) = repository.createDesignProject(base, token, workspace.captureId, projectName, model)
-        _state.update { it.copy(uploadProgress = "Generating editable GLB room shell") }
-        val shellJob = repository.waitForJob(base, token, shellJobId, timeoutMs = 300_000)
-        if (shellJob.status == "FAILED") error(shellJob.error ?: "Room shell generation failed")
-        val published = repository.publishDesign(base, token, project.id)
+        val project = repository.createDesignProject(base, token, workspace.captureId, projectName, model)
+        project.geometryJobId?.let { jobId ->
+            _state.update { it.copy(uploadProgress = "Generating sensor/manual geometry proposal") }
+            val geometryJob = repository.waitForJob(base, token, jobId, timeoutMs = 300_000)
+            if (geometryJob.status == "FAILED") error(geometryJob.error ?: "Geometry proposal failed")
+        }
         _state.update {
             it.copy(
-                workspace = workspace.copy(
-                    status = "PUBLISHED",
-                    publicUrl = published.publicUrl,
-                    designProjectId = project.id
-                ),
+                workspace = workspace.copy(status = "DESIGNER_REVIEW", publicUrl = "/studio/${project.id}", designProjectId = project.id),
                 uploadProgress = null,
-                message = "Design concept shell published"
+                message = "Draft model created. Open it in Designer Studio for correction and confirmation."
             )
         }
     }

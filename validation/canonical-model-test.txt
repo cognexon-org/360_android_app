@@ -1,0 +1,8 @@
+Mode B canonical model smoke test passed
+
+Test case:
+- L-shaped six-wall room
+- wall-attached door with swing
+- laser measurement with device/evidence provenance
+- floor placement and connection anchor
+- canonical schema 2.1

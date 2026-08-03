@@ -48,6 +48,26 @@ class ArScanActivity : ComponentActivity() {
             setPadding(24, 20, 24, 20)
             text = "Starting ARCore…"
         }
+        fun markupButton(title: String, type: String) = Button(this).apply {
+            text = title
+            setOnClickListener {
+                recorder.addOperatorMarkup(type)
+                statusView.text = "$title proposal recorded at the centre reticle"
+            }
+        }
+        fun markupRow(vararg actions: Pair<String, String>) = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            actions.forEach { (title, type) ->
+                addView(markupButton(title, type), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            }
+        }
+        val markupControls = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(markupRow("Corner" to "WALL_CORNER", "Door" to "DOOR", "Window" to "WINDOW", "Passage" to "OPEN_PASSAGE"))
+            addView(markupRow("Floor" to "FLOOR_POINT", "Ceiling" to "CEILING_POINT", "Stair" to "STAIR", "Level" to "LEVEL_CHANGE"))
+            addView(markupRow("Measure A" to "MEASUREMENT_START", "Measure B" to "MEASUREMENT_END"))
+        }
         val finishButton = Button(this).apply {
             text = "Finish room scan"
             setOnClickListener { finishScan() }
@@ -56,19 +76,28 @@ class ArScanActivity : ComponentActivity() {
             setTextColor(Color.WHITE)
             setBackgroundColor(0x99000000.toInt())
             setPadding(20, 12, 20, 12)
-            text = "Walk slowly around each wall, door and window. AR data is a draft; confirm dimensions manually. This app uses Google Play Services for AR."
+            text = "Keep the feature inside the centre reticle. Walk the perimeter slowly, mark corners/openings, capture floor and ceiling boundaries, and use Measure A/B for trusted AR endpoint proposals. Tape or laser confirmation is still recommended."
         }
         val overlay = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
             addView(notice, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
             addView(statusView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+            addView(markupControls, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
             addView(finishButton, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                 setMargins(20, 16, 20, 20)
             })
         }
+        val reticle = TextView(this).apply {
+            text = "+"
+            textSize = 34f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            setShadowLayer(6f, 0f, 0f, Color.BLACK)
+        }
         val root = FrameLayout(this).apply {
             addView(surfaceView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            addView(reticle, FrameLayout.LayoutParams(84, 84, Gravity.CENTER))
             addView(overlay, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
         }
         setContentView(root)
@@ -106,7 +135,10 @@ class ArScanActivity : ComponentActivity() {
                         planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
                         focusMode = Config.FocusMode.AUTO
                         updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
-                        if (arSession.isDepthModeSupported(Config.DepthMode.RAW_DEPTH_ONLY)) {
+                        if (arSession.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
+                            depthMode = Config.DepthMode.AUTOMATIC
+                            depthSupported = true
+                        } else if (arSession.isDepthModeSupported(Config.DepthMode.RAW_DEPTH_ONLY)) {
                             depthMode = Config.DepthMode.RAW_DEPTH_ONLY
                             depthSupported = true
                         } else {

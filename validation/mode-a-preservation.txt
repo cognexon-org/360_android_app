@@ -1,0 +1,8 @@
+6/6 Mode A preservation checks passed
+
+PASS CameraFovEstimator.kt byte-identical to supplied working baseline
+PASS OrientationTracker.kt byte-identical to supplied working baseline
+PASS PanoramaCaptureScreen.kt byte-identical to supplied working baseline
+PASS BackendRepository.uploadRoomPhotosAndStitch() text-identical
+PASS MainViewModel Mode A workflow text-identical
+PASS PropertyTourApp Mode A workspace/capture dialog text-identical

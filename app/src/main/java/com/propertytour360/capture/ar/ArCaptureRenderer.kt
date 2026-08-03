@@ -43,14 +43,29 @@ class ArCaptureRenderer(
                 session.setCameraTextureName(background.textureId)
                 textureBoundToSession = true
             }
-            session.setDisplayGeometry(displayRotationProvider(), width, height)
+            val displayRotation = displayRotationProvider()
+            session.setDisplayGeometry(displayRotation, width, height)
             val frame = session.update()
             background.draw(frame)
             val camera = frame.camera
-            val depthSupported = session.isDepthModeSupported(Config.DepthMode.RAW_DEPTH_ONLY)
-            recorder.record(frame, camera, depthSupported)
+            val depthSupported = session.isDepthModeSupported(Config.DepthMode.AUTOMATIC) || session.isDepthModeSupported(Config.DepthMode.RAW_DEPTH_ONLY)
+            recorder.record(frame, camera, depthSupported, displayRotation, width, height)
+            val progress = recorder.progress()
+            val guidance = when {
+                progress.keyframes < 8 -> "Walk slowly around the perimeter"
+                progress.verticalPlanes < 4 -> "Point at each wall and wall corner"
+                progress.floorPlaneObservations == 0 -> "Tilt down to capture the floor boundary"
+                progress.ceilingPlaneObservations == 0 -> "Tilt up to capture the ceiling boundary"
+                progress.cornerMarkups < 3 -> "Mark the visible room corners"
+                !progress.hasCenterHit -> "Aim the centre reticle at a detected surface"
+                else -> "Coverage looks usable; capture every opening before finishing"
+            }
             val status = when (camera.trackingState) {
-                TrackingState.TRACKING -> if (depthSupported) "Tracking • Raw Depth enabled" else "Tracking • pose/planes only"
+                TrackingState.TRACKING -> if (depthSupported) {
+                    "RGB-D ${progress.keyframes} • walls ${progress.verticalPlanes} • corners ${progress.cornerMarkups} • openings ${progress.openingMarkups}\n$guidance"
+                } else {
+                    "RGB/AR ${progress.keyframes} • walls ${progress.verticalPlanes}\n$guidance"
+                }
                 TrackingState.PAUSED -> trackingMessage(camera.trackingFailureReason)
                 TrackingState.STOPPED -> "Tracking stopped"
                 else -> "Initializing"
