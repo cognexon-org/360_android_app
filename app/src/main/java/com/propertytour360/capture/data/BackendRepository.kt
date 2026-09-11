@@ -7,9 +7,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
+import okhttp3.MediaType
 import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.asRequestBody
+import okio.BufferedSink
 import java.io.File
+import java.io.IOException
+import java.io.RandomAccessFile
 import java.security.MessageDigest
 
 class BackendRepository(
@@ -49,20 +54,26 @@ class BackendRepository(
     )
 
     suspend fun createProgressCapture(
-        baseUrl: String, token: String, project: ProgressProjectDto, mode: String
+        baseUrl: String,
+        token: String,
+        project: ProgressProjectDto,
+        mode: String,
+        deviceMetadataExtra: Map<String, Any> = emptyMap(),
+        checklist: Map<String, Any>? = null
     ): ProgressCaptureResponse {
         val metadata = mapOf(
             "manufacturer" to Build.MANUFACTURER,
             "model" to Build.MODEL,
             "sdk" to Build.VERSION.SDK_INT,
-            "appVersion" to "3.2.0",
+            "appVersion" to "3.3.0",
             "progressProjectId" to project.id
-        )
+        ) + deviceMetadataExtra
         return serviceProvider(baseUrl).createProgressCapture(
             bearer(token), project.id, ProgressCaptureCreateBody(
                 mode = mode,
                 floorId = project.floors.firstOrNull()?.id,
                 deviceMetadata = metadata,
+                checklist = checklist,
                 spatialScope = project.floors.firstOrNull()?.id?.let { mapOf("floorId" to it) }
             )
         )
@@ -108,22 +119,100 @@ class BackendRepository(
         roomId: String?,
         kind: String,
         file: File,
-        mimeType: String
+        mimeType: String,
+        progress: ((Long, Long) -> Unit)? = null
+    ): AssetDto = uploadFileResumable(baseUrl, token, captureId, roomId, kind, file, mimeType, progress)
+
+    suspend fun uploadFileResumable(
+        baseUrl: String,
+        token: String,
+        captureId: String,
+        roomId: String?,
+        kind: String,
+        file: File,
+        mimeType: String,
+        progress: ((Long, Long) -> Unit)? = null
     ): AssetDto = withContext(Dispatchers.IO) {
+        require(file.exists() && file.isFile) { "Upload file is missing: ${file.absolutePath}" }
         val api = serviceProvider(baseUrl)
-        val upload = api.requestUploadUrl(
-            bearer(token), captureId,
-            UploadUrlBody(roomId, kind, file.name, mimeType, file.length())
+        val checksum = sha256(file)
+        val idempotencyKey = sha256Text("$captureId|${roomId.orEmpty()}|$kind|${file.name}|${file.length()}|$checksum")
+        var upload = api.createResumableUpload(
+            bearer(token), idempotencyKey, captureId,
+            ResumableUploadCreateBody(
+                roomId = roomId,
+                kind = kind,
+                filename = file.name,
+                mimeType = mimeType,
+                sizeBytes = file.length(),
+                checksumSha256 = checksum
+            )
         )
-        val request = Request.Builder()
-            .url(upload.uploadUrl)
-            .put(file.asRequestBody(mimeType.toMediaTypeOrNull()))
-            .build()
-        uploadClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) error("Upload failed: HTTP ${response.code}")
+        if (upload.status == "COMPLETED") {
+            return@withContext api.completeResumableUpload(bearer(token), captureId, upload.id).asset
         }
-        api.completeUpload(bearer(token), captureId, upload.assetId, CompleteUploadBody(sha256(file)))
+
+        val completeParts = upload.parts.filter { it.status == "UPLOADED" }.associateBy { it.partNumber }
+        var uploadedBytes = completeParts.values.sumOf { it.sizeBytes }
+        progress?.invoke(uploadedBytes, file.length())
+
+        for (partNumber in 1..upload.totalParts) {
+            if (completeParts.containsKey(partNumber)) continue
+            val offset = (partNumber - 1L) * upload.chunkSizeBytes.toLong()
+            val length = minOf(upload.chunkSizeBytes.toLong(), file.length() - offset)
+            var uploaded = false
+            var lastFailure: Throwable? = null
+            repeat(3) { attempt ->
+                if (uploaded) return@repeat
+                try {
+                    val part = api.requestResumablePartUrl(bearer(token), captureId, upload.id, partNumber)
+                    if (!part.alreadyUploaded) {
+                        val url = part.uploadUrl ?: error("Upload URL missing for part $partNumber")
+                        val request = Request.Builder()
+                            .url(url)
+                            .put(FileSliceRequestBody(file, offset, length, mimeType.toMediaTypeOrNull()))
+                            .build()
+                        uploadClient.newCall(request).execute().use { response ->
+                            if (!response.isSuccessful) {
+                                val retryable = response.code == 408 || response.code == 429 || response.code >= 500
+                                if (retryable) throw IOException("Chunk upload failed: HTTP ${response.code}")
+                                error("Chunk upload rejected: HTTP ${response.code}")
+                            }
+                        }
+                        api.completeResumablePart(
+                            bearer(token), captureId, upload.id, partNumber, ResumablePartCompleteBody()
+                        )
+                    }
+                    uploaded = true
+                } catch (error: Throwable) {
+                    lastFailure = error
+                    if (attempt < 2) delay((attempt + 1L) * 1000L)
+                }
+            }
+            if (!uploaded) throw lastFailure ?: IOException("Unable to upload part $partNumber")
+            uploadedBytes += length
+            progress?.invoke(uploadedBytes.coerceAtMost(file.length()), file.length())
+        }
+
+        upload = api.getResumableUpload(bearer(token), captureId, upload.id)
+        if (upload.parts.count { it.status == "UPLOADED" } != upload.totalParts) {
+            throw IOException("Upload did not persist all parts; retry will resume from server state")
+        }
+        api.completeResumableUpload(bearer(token), captureId, upload.id).asset
     }
+
+    suspend fun submitCaptureQualityFeedback(
+        baseUrl: String,
+        token: String,
+        captureId: String,
+        scope: String,
+        spatialRoomId: String?,
+        report: Map<String, Any>,
+        deviceTelemetry: Map<String, Any>? = null
+    ): CaptureQualityFeedbackResponse = serviceProvider(baseUrl).submitCaptureQualityFeedback(
+        bearer(token), captureId,
+        CaptureQualityFeedbackBody(scope = scope, spatialRoomId = spatialRoomId, report = report, deviceTelemetry = deviceTelemetry)
+    )
 
     suspend fun uploadRoomPhotosAndStitch(
         baseUrl: String,
@@ -272,6 +361,34 @@ class BackendRepository(
 
     suspend fun publishDesign(baseUrl: String, token: String, projectId: String): PublishDesignResponse =
         serviceProvider(baseUrl).publishDesign(bearer(token), projectId)
+
+    private class FileSliceRequestBody(
+        private val file: File,
+        private val offset: Long,
+        private val length: Long,
+        private val mediaType: MediaType?
+    ) : RequestBody() {
+        override fun contentType(): MediaType? = mediaType
+        override fun contentLength(): Long = length
+
+        override fun writeTo(sink: BufferedSink) {
+            RandomAccessFile(file, "r").use { input ->
+                input.seek(offset)
+                var remaining = length
+                val buffer = ByteArray(64 * 1024)
+                while (remaining > 0) {
+                    val read = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
+                    if (read < 0) throw IOException("Unexpected end of file while uploading ${file.name}")
+                    sink.write(buffer, 0, read)
+                    remaining -= read
+                }
+            }
+        }
+    }
+
+    private fun sha256Text(value: String): String = MessageDigest.getInstance("SHA-256")
+        .digest(value.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
 
     private fun sha256(file: File): String {
         val digest = MessageDigest.getInstance("SHA-256")

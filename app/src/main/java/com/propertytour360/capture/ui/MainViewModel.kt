@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import com.propertytour360.capture.PropertyTourApplication
 import com.propertytour360.capture.data.AppPreferences
 import com.propertytour360.capture.data.FinalizePackageRoom
+import com.propertytour360.capture.data.CaptureUploadQueue
 import com.propertytour360.capture.model.AppUiState
 import com.propertytour360.capture.model.CaptureMode
 import com.propertytour360.capture.model.CaptureWorkspace
@@ -19,6 +20,8 @@ import com.propertytour360.capture.model.OpeningDraft
 import com.propertytour360.capture.model.MeasurementDraft
 import com.propertytour360.capture.model.RoomPlacement
 import com.propertytour360.capture.util.DesignModelBuilder
+import com.propertytour360.capture.util.CapturePreflight
+import com.propertytour360.capture.util.PanoramaQualityEvaluator
 import com.propertytour360.capture.util.ScanQualityEvaluator
 import com.propertytour360.capture.util.ModeBCapturePackage
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,6 +31,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
+import java.io.IOException
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
@@ -46,11 +50,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val projects = if (!token.isNullOrBlank() && baseUrl.isNotBlank()) {
                 runCatching { repository.listProgressProjects(baseUrl, token) }.getOrDefault(emptyList())
             } else emptyList()
-            _state.update { it.copy(backendUrl = baseUrl, token = token, progressProjects = projects) }
+            val preflight = CapturePreflight.evaluate(getApplication())
+            _state.update {
+                it.copy(
+                    backendUrl = baseUrl,
+                    token = token,
+                    progressProjects = projects,
+                    preflightStatus = preflight.status,
+                    preflightScore = preflight.score,
+                    preflightWarnings = preflight.warnings,
+                    preflightBlockers = preflight.blockers
+                )
+            }
         }
     }
 
     fun clearMessage() = _state.update { it.copy(message = null, error = null) }
+
+    fun refreshPreflight() {
+        val report = CapturePreflight.evaluate(getApplication())
+        _state.update {
+            it.copy(
+                preflightStatus = report.status,
+                preflightScore = report.score,
+                preflightWarnings = report.warnings,
+                preflightBlockers = report.blockers
+            )
+        }
+    }
 
     fun saveBackendUrl(value: String) {
         viewModelScope.launch {
@@ -98,7 +125,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val progressProject = repository.createProgressProject(
             baseUrl, token, unit.id, "$propertyName — $unitLabel"
         )
-        val progressCapture = repository.createProgressCapture(baseUrl, token, progressProject, mode.apiValue)
+        val preflight = CapturePreflight.evaluate(getApplication())
+        require(preflight.canStart) { preflight.blockers.joinToString(" • ") }
+        val progressCapture = repository.createProgressCapture(
+            baseUrl, token, progressProject, mode.apiValue,
+            deviceMetadataExtra = preflight.deviceTelemetry(),
+            checklist = mapOf("preflight" to preflight.reportMap())
+        )
+        runCatching {
+            repository.submitCaptureQualityFeedback(
+                baseUrl, token, progressCapture.capture.id, "PREFLIGHT", null,
+                preflight.reportMap(), preflight.deviceTelemetry()
+            )
+        }
         val refreshedProjects = repository.listProgressProjects(baseUrl, token)
         _state.update {
             it.copy(
@@ -125,7 +164,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             ?: repository.listProgressProjects(baseUrl, token).firstOrNull { it.id == projectId }
             ?: error("Spatial project not found")
         val unit = project.unit ?: error("Project unit details are unavailable")
-        val capture = repository.createProgressCapture(baseUrl, token, project, mode.apiValue)
+        val preflight = CapturePreflight.evaluate(getApplication())
+        require(preflight.canStart) { preflight.blockers.joinToString(" • ") }
+        val capture = repository.createProgressCapture(
+            baseUrl, token, project, mode.apiValue,
+            deviceMetadataExtra = preflight.deviceTelemetry(),
+            checklist = mapOf("preflight" to preflight.reportMap())
+        )
+        runCatching {
+            repository.submitCaptureQualityFeedback(
+                baseUrl, token, capture.capture.id, "PREFLIGHT", null,
+                preflight.reportMap(), preflight.deviceTelemetry()
+            )
+        }
         _state.update {
             it.copy(
                 workspace = CaptureWorkspace(
@@ -177,6 +228,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setRoomPhotos(roomId: String, result: PanoramaCaptureResult) {
+        val quality = PanoramaQualityEvaluator.evaluate(result)
         updateRoom(roomId) {
             it.copy(
                 localPhotos = result.files,
@@ -188,8 +240,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 panoramaVerticalFovDegrees = result.verticalFovDegrees,
                 panoramaMinPitchDegrees = result.minPitchDegrees,
                 panoramaMaxPitchDegrees = result.maxPitchDegrees,
-                processingStatus = "${result.pattern.title}: ${result.files.size} photos ready"
+                processingStatus = "${result.pattern.title}: ${quality.status.lowercase().replace('_', ' ')} (${quality.score}/100)"
             )
+        }
+        val workspace = _state.value.workspace
+        val room = workspace?.rooms?.firstOrNull { it.serverId == roomId }
+        if (workspace != null && room?.spatialRoomId != null) {
+            postQualityFeedback(workspace.captureId, room.spatialRoomId, quality.toMap())
+        }
+        _state.update {
+            it.copy(message = if (quality.issues.isEmpty()) "Guided panorama quality passed" else quality.issues.joinToString(" • "))
         }
     }
 
@@ -217,30 +277,47 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val room = workspace.rooms.first { it.serverId == roomId }
         val token = requireToken()
         val baseUrl = requireBaseUrl()
-        when {
-            room.panoramaFile != null -> {
-                _state.update { it.copy(uploadProgress = "Uploading ${room.name} panorama") }
-                val uploaded = repository.uploadPanorama(baseUrl, token, workspace.captureId, room.serverId, room.panoramaFile, "image/jpeg")
-                repository.waitForAsset(baseUrl, token, workspace.captureId, uploaded.id)
-            }
-            room.localPhotos.size >= 3 -> {
-                val jobId = repository.uploadRoomPhotosAndStitch(
-                    baseUrl, token, workspace.captureId, room
-                ) { done, total ->
-                    _state.update { it.copy(uploadProgress = "${room.name}: uploaded $done of $total") }
-                }
-                val job = repository.waitForJob(baseUrl, token, jobId)
-                if (job.status == "FAILED") error(job.error ?: "Panorama stitching failed")
-                val refreshedCapture = repository.getCapture(baseUrl, token, workspace.captureId)
-                val refreshedRoom = refreshedCapture.rooms.firstOrNull { it.id == room.serverId }
-                if (refreshedRoom?.panoramaAssetId == null) {
-                    error("Panorama QA rejected this room. Review capture stability and recapture.")
-                }
-            }
-            else -> error("Complete a guided room capture or import a 2:1 panorama")
+        val currentCapture = runCatching { repository.getCapture(baseUrl, token, workspace.captureId) }.getOrNull()
+        if (currentCapture?.rooms?.firstOrNull { it.id == room.serverId }?.panoramaAssetId != null) {
+            updateRoom(roomId) { it.copy(processingStatus = "Panorama already processed") }
+            _state.update { it.copy(uploadProgress = null, message = "${room.name} is already available") }
+            return@runAction
         }
-        updateRoom(roomId) { it.copy(processingStatus = "Panorama approved/uploaded") }
-        _state.update { it.copy(uploadProgress = null, message = "${room.name} processed") }
+        try {
+            when {
+                room.panoramaFile != null -> {
+                    _state.update { it.copy(uploadProgress = "Uploading ${room.name} panorama") }
+                    val uploaded = repository.uploadPanorama(baseUrl, token, workspace.captureId, room.serverId, room.panoramaFile, "image/jpeg")
+                    repository.waitForAsset(baseUrl, token, workspace.captureId, uploaded.id)
+                }
+                room.localPhotos.size >= 3 -> {
+                    val jobId = repository.uploadRoomPhotosAndStitch(
+                        baseUrl, token, workspace.captureId, room
+                    ) { done, total ->
+                        _state.update { it.copy(uploadProgress = "${room.name}: uploaded $done of $total") }
+                    }
+                    val job = repository.waitForJob(baseUrl, token, jobId)
+                    if (job.status == "FAILED") error(job.error ?: "Panorama stitching failed")
+                    val refreshedCapture = repository.getCapture(baseUrl, token, workspace.captureId)
+                    val refreshedRoom = refreshedCapture.rooms.firstOrNull { it.id == room.serverId }
+                    if (refreshedRoom?.panoramaAssetId == null) {
+                        error("Panorama QA rejected this room. Review capture stability and recapture.")
+                    }
+                }
+                else -> error("Complete a guided room capture or import a 2:1 panorama")
+            }
+            updateRoom(roomId) { it.copy(processingStatus = "Panorama approved/uploaded") }
+            _state.update { it.copy(uploadProgress = null, message = "${room.name} processed") }
+        } catch (network: IOException) {
+            val taskId = CaptureUploadQueue.enqueueModeA(getApplication(), workspace.captureId, room)
+            updateRoom(roomId) { it.copy(processingStatus = "Queued for background upload") }
+            _state.update {
+                it.copy(
+                    uploadProgress = null,
+                    message = "Network interrupted. ${room.name} is safely queued and will resume automatically ($taskId)."
+                )
+            }
+        }
     }
 
     fun submitAndPublishTour(title: String) = runAction {
@@ -274,6 +351,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 scanQualityStatus = report.status,
                 processingStatus = "AR scan ${report.status.lowercase().replace('_', ' ')} (${report.score}/100)",
                 evidenceUploaded = false
+            )
+        }
+        val workspace = _state.value.workspace
+        val spatialRoomId = workspace?.rooms?.firstOrNull { it.serverId == roomId }?.spatialRoomId
+        if (workspace != null && spatialRoomId != null) {
+            postQualityFeedback(
+                workspace.captureId,
+                spatialRoomId,
+                mapOf(
+                    "score" to report.score,
+                    "status" to report.status,
+                    "issues" to report.issues,
+                    "poseCount" to report.poseCount,
+                    "planeSnapshots" to report.planeSnapshots,
+                    "depthFrames" to report.depthFrames,
+                    "durationSeconds" to report.durationSeconds,
+                    "keyframes" to report.keyframes,
+                    "wallObservations" to report.wallObservations,
+                    "floorObservations" to report.floorObservations,
+                    "ceilingObservations" to report.ceilingObservations
+                )
             )
         }
         _state.update { it.copy(message = if (report.issues.isEmpty()) "AR scan quality passed" else report.issues.joinToString(" • ")) }
@@ -424,36 +522,50 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(uploadProgress = "Packaging Mode B evidence") }
         val archive = zipDirectory(dir, "${room.name.replace(' ', '_')}_capture_package_v2.zip")
 
-        _state.update { it.copy(uploadProgress = "Uploading capture manifest") }
-        val manifestAsset = repository.uploadFile(
-            base, token, workspace.captureId, roomId,
-            "CAPTURE_MANIFEST", File(dir, "manifest.json"), "application/json"
-        )
+        try {
+            _state.update { it.copy(uploadProgress = "Uploading capture manifest") }
+            val manifestAsset = repository.uploadFile(
+                base, token, workspace.captureId, roomId,
+                "CAPTURE_MANIFEST", File(dir, "manifest.json"), "application/json"
+            )
 
-        _state.update {
-            it.copy(uploadProgress = "Uploading evidence archive (${archive.length() / (1024 * 1024)} MB)")
-        }
-        val archiveAsset = repository.uploadFile(
-            base, token, workspace.captureId, roomId,
-            "MODEL_EVIDENCE", archive, "application/zip"
-        )
+            _state.update {
+                it.copy(uploadProgress = "Uploading evidence archive (${archive.length() / (1024 * 1024)} MB)")
+            }
+            val archiveAsset = repository.uploadFile(
+                base, token, workspace.captureId, roomId,
+                "MODEL_EVIDENCE", archive, "application/zip"
+            ) { uploaded, total ->
+                val percent = if (total > 0) (uploaded * 100 / total).toInt() else 0
+                _state.update { state -> state.copy(uploadProgress = "Evidence archive: $percent%") }
+            }
 
-        // Register the pair as a capture package so the server can verify the
-        // checksums inside the archive and start geometry processing.
-        _state.update { it.copy(uploadProgress = "Finalizing capture package") }
-        repository.finalizeCapturePackages(
-            base, token, workspace.captureId,
-            listOf(
-                FinalizePackageRoom(
-                    roomId = roomId,
-                    manifestAssetId = manifestAsset.id,
-                    archiveAssetId = archiveAsset.id
+            // Register the pair as a capture package so the server can verify the
+            // checksums inside the archive and start geometry processing.
+            _state.update { it.copy(uploadProgress = "Finalizing capture package") }
+            repository.finalizeCapturePackages(
+                base, token, workspace.captureId,
+                listOf(
+                    FinalizePackageRoom(
+                        roomId = roomId,
+                        manifestAssetId = manifestAsset.id,
+                        archiveAssetId = archiveAsset.id
+                    )
                 )
             )
-        )
 
-        updateRoom(roomId) { it.copy(processingStatus = "Capture Package v2 uploaded", evidenceUploaded = true) }
-        _state.update { it.copy(uploadProgress = null, message = "RGB-D evidence package uploaded") }
+            updateRoom(roomId) { it.copy(processingStatus = "Capture Package v2 uploaded", evidenceUploaded = true) }
+            _state.update { it.copy(uploadProgress = null, message = "RGB-D evidence package uploaded") }
+        } catch (network: IOException) {
+            val taskId = CaptureUploadQueue.enqueueModeBPackage(
+                getApplication(), workspace.captureId, roomId, room.name,
+                File(dir, "manifest.json"), archive
+            )
+            updateRoom(roomId) { it.copy(processingStatus = "Evidence queued for background upload", evidenceUploaded = false) }
+            _state.update {
+                it.copy(uploadProgress = null, message = "Network interrupted. Evidence is staged safely and will resume automatically ($taskId).")
+            }
+        }
     }
 
     fun submitDesignScan(projectName: String) = runAction {
@@ -484,6 +596,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 uploadProgress = null,
                 message = "Draft model created. Open it in Designer Studio for correction and confirmation."
             )
+        }
+    }
+
+    private fun postQualityFeedback(captureId: String, spatialRoomId: String, report: Map<String, Any>) {
+        val token = _state.value.token ?: return
+        val baseUrl = _state.value.backendUrl.takeIf { it.isNotBlank() } ?: return
+        viewModelScope.launch {
+            runCatching {
+                repository.submitCaptureQualityFeedback(
+                    baseUrl, token, captureId, "ROOM", spatialRoomId, report
+                )
+            }
         }
     }
 

@@ -123,6 +123,11 @@ fun PropertyTourApp(viewModel: MainViewModel) {
                     backendUrl = state.backendUrl,
                     busy = state.busy,
                     progressProjects = state.progressProjects,
+                    preflightStatus = state.preflightStatus,
+                    preflightScore = state.preflightScore,
+                    preflightWarnings = state.preflightWarnings,
+                    preflightBlockers = state.preflightBlockers,
+                    onRecheckPreflight = viewModel::refreshPreflight,
                     onSettings = { settingsOpen = true },
                     onLogout = viewModel::logout,
                     onStartExisting = viewModel::startExistingWorkspace,
@@ -238,6 +243,11 @@ private fun DashboardScreen(
     backendUrl: String,
     busy: Boolean,
     progressProjects: List<ProgressProjectDto>,
+    preflightStatus: String,
+    preflightScore: Int?,
+    preflightWarnings: List<String>,
+    preflightBlockers: List<String>,
+    onRecheckPreflight: () -> Unit,
     onSettings: () -> Unit,
     onLogout: () -> Unit,
     onStartExisting: (String, CaptureMode) -> Unit,
@@ -265,6 +275,22 @@ private fun DashboardScreen(
                 Row {
                     IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, "Settings") }
                     IconButton(onClick = onLogout) { Icon(Icons.Default.Logout, "Logout") }
+                }
+            }
+        }
+        item {
+            Card {
+                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Column {
+                            Text("Capture readiness", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Text("$preflightStatus${preflightScore?.let { " • $it/100" } ?: ""}", style = MaterialTheme.typography.bodySmall)
+                        }
+                        TextButton(onClick = onRecheckPreflight) { Text("Recheck") }
+                    }
+                    preflightBlockers.forEach { Text("Blocker: $it", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                    preflightWarnings.take(3).forEach { Text("Warning: $it", style = MaterialTheme.typography.bodySmall) }
+                    if (preflightStatus == "READY") Text("Device, storage and network checks passed.", style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
@@ -299,7 +325,7 @@ private fun DashboardScreen(
                         Text("${project.unit?.label ?: "Unit"} • ${project.rooms.size} spatial rooms • ${project._count?.snapshots ?: 0} snapshots", style = MaterialTheme.typography.bodySmall)
                         Button(
                             onClick = { onStartExisting(project.id, mode!!) },
-                            enabled = mode != null && !busy,
+                            enabled = mode != null && !busy && preflightBlockers.isEmpty(),
                             modifier = Modifier.fillMaxWidth()
                         ) { Text("Capture selected mode into this project") }
                     }
@@ -325,7 +351,7 @@ private fun DashboardScreen(
                 onClick = {
                     onStart(mode!!, propertyName, address, type, unit, bedrooms.toIntOrNull(), bathrooms.toIntOrNull())
                 },
-                enabled = mode != null && propertyName.isNotBlank() && address.isNotBlank() && unit.isNotBlank() && !busy,
+                enabled = mode != null && propertyName.isNotBlank() && address.isNotBlank() && unit.isNotBlank() && !busy && preflightBlockers.isEmpty(),
                 modifier = Modifier.fillMaxWidth()
             ) { Text("Create capture session") }
         }

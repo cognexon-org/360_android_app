@@ -108,5 +108,9 @@ data class AppUiState(
     val error: String? = null,
     val workspace: CaptureWorkspace? = null,
     val uploadProgress: String? = null,
+    val preflightStatus: String = "CHECKING",
+    val preflightScore: Int? = null,
+    val preflightWarnings: List<String> = emptyList(),
+    val preflightBlockers: List<String> = emptyList(),
     val progressProjects: List<com.propertytour360.capture.data.ProgressProjectDto> = emptyList()
 )

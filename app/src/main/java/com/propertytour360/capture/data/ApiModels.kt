@@ -231,3 +231,73 @@ data class ProgressCaptureResponse(
     val snapshot: CaptureSnapshotDto
 )
 
+
+// Patch 02 — resumable upload and capture-quality contracts.
+data class ResumableUploadCreateBody(
+    val roomId: String? = null,
+    val kind: String,
+    val filename: String,
+    val mimeType: String,
+    val sizeBytes: Long,
+    val checksumSha256: String,
+    val chunkSizeBytes: Int = 5 * 1024 * 1024
+)
+
+data class ResumableUploadPartDto(
+    val partNumber: Int,
+    val sizeBytes: Long,
+    val checksumSha256: String? = null,
+    val status: String,
+    val completedAt: String? = null
+)
+
+data class ResumableUploadDto(
+    val id: String,
+    val captureId: String,
+    val roomId: String? = null,
+    val assetId: String,
+    val filename: String,
+    val mimeType: String,
+    val kind: String,
+    val totalSizeBytes: Long,
+    val chunkSizeBytes: Int,
+    val totalParts: Int,
+    val checksumSha256: String? = null,
+    val status: String,
+    val uploadedBytes: Long = 0,
+    val lastError: String? = null,
+    val parts: List<ResumableUploadPartDto> = emptyList()
+)
+
+data class ResumablePartUrlResponse(
+    val partNumber: Int,
+    val expectedBytes: Long,
+    val uploadUrl: String? = null,
+    val expiresInSeconds: Int,
+    val alreadyUploaded: Boolean = false
+)
+
+data class ResumablePartCompleteBody(val checksumSha256: String? = null)
+data class ResumablePartCompleteResponse(
+    val partNumber: Int,
+    val status: String,
+    val sizeBytes: Long,
+    val uploadedBytes: Long? = null
+)
+
+data class ResumableUploadCompleteResponse(
+    val upload: ResumableUploadDto,
+    val asset: AssetDto
+)
+
+data class CaptureQualityFeedbackBody(
+    val scope: String,
+    val spatialRoomId: String? = null,
+    val report: Map<String, Any>,
+    val deviceTelemetry: Map<String, Any>? = null
+)
+
+data class CaptureQualityFeedbackResponse(
+    val captureId: String,
+    val qualityReport: Map<String, Any>
+)

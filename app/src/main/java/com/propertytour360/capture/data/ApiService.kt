@@ -174,4 +174,50 @@ interface ApiService {
         @Header("Authorization") authorization: String,
         @Path("projectId") projectId: String
     ): PublishDesignResponse
+
+    @POST("v2/captures/{captureId}/uploads")
+    suspend fun createResumableUpload(
+        @Header("Authorization") authorization: String,
+        @Header("Idempotency-Key") idempotencyKey: String,
+        @Path("captureId") captureId: String,
+        @Body body: ResumableUploadCreateBody
+    ): ResumableUploadDto
+
+    @GET("v2/captures/{captureId}/uploads/{uploadId}")
+    suspend fun getResumableUpload(
+        @Header("Authorization") authorization: String,
+        @Path("captureId") captureId: String,
+        @Path("uploadId") uploadId: String
+    ): ResumableUploadDto
+
+    @POST("v2/captures/{captureId}/uploads/{uploadId}/parts/{partNumber}/url")
+    suspend fun requestResumablePartUrl(
+        @Header("Authorization") authorization: String,
+        @Path("captureId") captureId: String,
+        @Path("uploadId") uploadId: String,
+        @Path("partNumber") partNumber: Int
+    ): ResumablePartUrlResponse
+
+    @POST("v2/captures/{captureId}/uploads/{uploadId}/parts/{partNumber}/complete")
+    suspend fun completeResumablePart(
+        @Header("Authorization") authorization: String,
+        @Path("captureId") captureId: String,
+        @Path("uploadId") uploadId: String,
+        @Path("partNumber") partNumber: Int,
+        @Body body: ResumablePartCompleteBody
+    ): ResumablePartCompleteResponse
+
+    @POST("v2/captures/{captureId}/uploads/{uploadId}/complete")
+    suspend fun completeResumableUpload(
+        @Header("Authorization") authorization: String,
+        @Path("captureId") captureId: String,
+        @Path("uploadId") uploadId: String
+    ): ResumableUploadCompleteResponse
+
+    @POST("v2/progress-captures/{captureId}/quality-feedback")
+    suspend fun submitCaptureQualityFeedback(
+        @Header("Authorization") authorization: String,
+        @Path("captureId") captureId: String,
+        @Body body: CaptureQualityFeedbackBody
+    ): CaptureQualityFeedbackResponse
 }
