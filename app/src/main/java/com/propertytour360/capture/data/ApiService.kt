@@ -68,6 +68,13 @@ interface ApiService {
         @Body body: ProgressCaptureCreateBody
     ): ProgressCaptureResponse
 
+    @POST("v2/progress-projects/{projectId}/issues")
+    suspend fun createProgressIssue(
+        @Header("Authorization") authorization: String,
+        @Path("projectId") projectId: String,
+        @Body body: ProgressIssueCreateBody
+    ): ProgressIssueDto
+
     @POST("v1/captures")
     suspend fun createCapture(
         @Header("Authorization") authorization: String,

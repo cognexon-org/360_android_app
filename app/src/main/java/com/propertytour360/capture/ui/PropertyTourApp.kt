@@ -142,6 +142,7 @@ fun PropertyTourApp(viewModel: MainViewModel) {
                     },
                     onImportPanorama = viewModel::importPanorama,
                     onUploadRoom = viewModel::uploadModeARoom,
+                    onCreateIssue = viewModel::createFieldIssue,
                     onPublish = viewModel::submitAndPublishTour
                 )
                 else -> ModeBWorkspaceScreen(
@@ -160,6 +161,7 @@ fun PropertyTourApp(viewModel: MainViewModel) {
                     onSaveMeasurements = viewModel::saveMeasurements,
                     onSaveRoomPlan = viewModel::saveRoomPlan,
                     onUploadEvidence = viewModel::uploadArEvidence,
+                    onCreateIssue = viewModel::createFieldIssue,
                     onPublish = viewModel::submitDesignScan
                 )
             }
@@ -387,6 +389,7 @@ private fun ModeAWorkspaceScreen(
     onCapture: (String, PanoramaCapturePattern) -> Unit,
     onImportPanorama: (String, Uri) -> Unit,
     onUploadRoom: (String) -> Unit,
+    onCreateIssue: (String, String) -> Unit,
     onPublish: (String) -> Unit
 ) {
     val workspace = state.workspace ?: return
@@ -432,6 +435,7 @@ private fun ModeAWorkspaceScreen(
                     Button(onClick = { onAddRoom(roomName); roomName = "" }, enabled = roomName.isNotBlank()) { Text("Add") }
                 }
             }
+            item { QuickIssueCard(onCreateIssue) }
             if (workspace.rooms.isNotEmpty()) {
                 item {
                     OutlinedTextField(title, { title = it }, label = { Text("Public tour title") }, modifier = Modifier.fillMaxWidth())
@@ -531,6 +535,7 @@ private fun ModeBWorkspaceScreen(
     onSaveMeasurements: (String, Double, Double, Double, Double?, Double?, Double?, Double?) -> Unit,
     onSaveRoomPlan: (String, List<PlanPoint>, Double, List<OpeningDraft>, List<MeasurementDraft>, RoomPlacement) -> Unit,
     onUploadEvidence: (String) -> Unit,
+    onCreateIssue: (String, String) -> Unit,
     onPublish: (String) -> Unit
 ) {
     val workspace = state.workspace ?: return
@@ -621,6 +626,7 @@ private fun ModeBWorkspaceScreen(
                     Button(onClick = { onAddRoom(roomName); roomName = "" }, enabled = roomName.isNotBlank()) { Text("Add") }
                 }
             }
+            item { QuickIssueCard(onCreateIssue) }
             if (workspace.rooms.isNotEmpty()) {
                 item {
                     OutlinedTextField(projectName, { projectName = it }, label = { Text("Design project name") }, modifier = Modifier.fillMaxWidth())
@@ -655,6 +661,25 @@ private fun ModeBWorkspaceScreen(
                 measurementRoom = null
             }
         )
+    }
+}
+
+@Composable
+private fun QuickIssueCard(onCreateIssue: (String, String) -> Unit) {
+    var title by remember { mutableStateOf("") }
+    var severity by remember { mutableStateOf("MEDIUM") }
+    Card {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Quick site issue", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text("Record field context now; assignment, verification and resolution continue in Project Studio.", style = MaterialTheme.typography.bodySmall)
+            OutlinedTextField(title, { title = it }, label = { Text("Issue / observation") }, modifier = Modifier.fillMaxWidth())
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("LOW", "MEDIUM", "HIGH").forEach { level ->
+                    OutlinedButton(onClick = { severity = level }, modifier = Modifier.weight(1f)) { Text(if (severity == level) "✓ $level" else level) }
+                }
+            }
+            Button(onClick = { onCreateIssue(title, severity); title = "" }, enabled = title.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Record issue") }
+        }
     }
 }
 

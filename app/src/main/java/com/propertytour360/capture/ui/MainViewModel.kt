@@ -202,6 +202,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun createFieldIssue(title: String, severity: String = "MEDIUM") = runAction {
+        val workspace = requireWorkspace()
+        require(title.isNotBlank()) { "Issue title is required" }
+        val issue = repository.createProgressIssue(
+            requireBaseUrl(), requireToken(), workspace.progressProjectId, title.trim(), severity,
+            spatialRoomId = workspace.rooms.singleOrNull()?.spatialRoomId,
+            captureId = workspace.captureId
+        )
+        _state.update { it.copy(message = "Issue recorded: ${issue.title}") }
+    }
+
     fun refreshProgressProjects() = runAction {
         val projects = repository.listProgressProjects(requireBaseUrl(), requireToken())
         _state.update { it.copy(progressProjects = projects, message = "Projects refreshed") }

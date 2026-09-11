@@ -89,6 +89,23 @@ class BackendRepository(
         )
     }
 
+    suspend fun createProgressIssue(
+        baseUrl: String,
+        token: String,
+        projectId: String,
+        title: String,
+        severity: String = "MEDIUM",
+        spatialRoomId: String? = null,
+        captureId: String? = null
+    ): ProgressIssueDto = serviceProvider(baseUrl).createProgressIssue(
+        bearer(token), projectId, ProgressIssueCreateBody(
+            title = title,
+            severity = severity,
+            spatialRoomId = spatialRoomId,
+            evidenceRefs = listOfNotNull(captureId?.let { "capture:$it" })
+        )
+    )
+
     suspend fun createOrReuseSpatialRoom(
         baseUrl: String, token: String, projectId: String, floorId: String?, name: String, sortOrder: Int
     ): SpatialRoomDto = serviceProvider(baseUrl).createSpatialRoom(

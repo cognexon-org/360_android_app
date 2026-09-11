@@ -337,3 +337,27 @@ data class ProgressTimelineSnapshotDto(
     val floor: SpatialFloorDto? = null,
     val capture: ProgressTimelineCaptureDto
 )
+
+
+// Patch 06 — field issue capture contract.
+data class ProgressIssueCreateBody(
+    val title: String,
+    val description: String? = null,
+    val severity: String = "MEDIUM",
+    val spatialRoomId: String? = null,
+    val evidenceRefs: List<String> = emptyList()
+)
+
+data class ProgressIssueDto(
+    val id: String,
+    val projectId: String,
+    val spatialRoomId: String? = null,
+    val title: String,
+    val description: String? = null,
+    val status: String = "OPEN",
+    val severity: String = "MEDIUM",
+    val verification: String = "UNVERIFIED",
+    val assigneeId: String? = null,
+    val createdAt: String? = null,
+    val updatedAt: String? = null
+)
