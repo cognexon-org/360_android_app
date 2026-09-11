@@ -301,3 +301,22 @@ data class CaptureQualityFeedbackResponse(
     val captureId: String,
     val qualityReport: Map<String, Any>
 )
+
+// Patch 04 — lightweight project-history contract for repeat capture context.
+data class ProgressTimelineCaptureDto(
+    val id: String,
+    val mode: String,
+    val status: String,
+    val rooms: List<RoomDto> = emptyList()
+)
+
+data class ProgressTimelineSnapshotDto(
+    val id: String,
+    val projectId: String,
+    val captureId: String,
+    val capturedAt: String,
+    val sourceType: String,
+    val status: String,
+    val floor: SpatialFloorDto? = null,
+    val capture: ProgressTimelineCaptureDto
+)

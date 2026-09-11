@@ -47,6 +47,9 @@ class BackendRepository(
     suspend fun listProgressProjects(baseUrl: String, token: String): List<ProgressProjectDto> =
         serviceProvider(baseUrl).listProgressProjects(bearer(token))
 
+    suspend fun listProgressTimeline(baseUrl: String, token: String, projectId: String): List<ProgressTimelineSnapshotDto> =
+        serviceProvider(baseUrl).listProgressTimeline(bearer(token), projectId)
+
     suspend fun createProgressProject(
         baseUrl: String, token: String, unitId: String, name: String, captureCadence: String? = "WEEKLY"
     ): ProgressProjectDto = serviceProvider(baseUrl).createProgressProject(

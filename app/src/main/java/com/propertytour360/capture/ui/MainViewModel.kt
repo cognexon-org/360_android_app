@@ -166,6 +166,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val unit = project.unit ?: error("Project unit details are unavailable")
         val preflight = CapturePreflight.evaluate(getApplication())
         require(preflight.canStart) { preflight.blockers.joinToString(" • ") }
+        val previousSnapshots = runCatching { repository.listProgressTimeline(baseUrl, token, project.id) }.getOrDefault(emptyList())
         val capture = repository.createProgressCapture(
             baseUrl, token, project, mode.apiValue,
             deviceMetadataExtra = preflight.deviceTelemetry(),
@@ -189,7 +190,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     propertyName = unit.property?.name ?: project.name,
                     unitLabel = unit.label
                 ),
-                message = "New ${mode.title} capture added to ${project.name}"
+                message = "New ${mode.title} capture added to ${project.name} after ${previousSnapshots.size} previous snapshot${if (previousSnapshots.size == 1) "" else "s"}"
             )
         }
     }

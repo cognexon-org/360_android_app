@@ -36,6 +36,12 @@ interface ApiService {
         @Header("Authorization") authorization: String
     ): List<ProgressProjectDto>
 
+    @GET("v2/progress-projects/{projectId}/timeline")
+    suspend fun listProgressTimeline(
+        @Header("Authorization") authorization: String,
+        @Path("projectId") projectId: String
+    ): List<ProgressTimelineSnapshotDto>
+
     @POST("v2/progress-projects")
     suspend fun createProgressProject(
         @Header("Authorization") authorization: String,
