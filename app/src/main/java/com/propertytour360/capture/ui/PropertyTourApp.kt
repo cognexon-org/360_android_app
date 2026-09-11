@@ -324,7 +324,7 @@ private fun DashboardScreen(
                 Card {
                     Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(project.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        Text("${project.unit?.label ?: "Unit"} • ${project.rooms.size} spatial rooms • ${project._count?.snapshots ?: 0} snapshots", style = MaterialTheme.typography.bodySmall)
+                        Text("${project.unit?.label ?: "Unit"} • ${project.rooms.size} spatial rooms • ${project._count?.snapshots ?: 0} snapshots • ${project._count?.analysisRuns ?: 0} AI review runs", style = MaterialTheme.typography.bodySmall)
                         Button(
                             onClick = { onStartExisting(project.id, mode!!) },
                             enabled = mode != null && !busy && preflightBlockers.isEmpty(),

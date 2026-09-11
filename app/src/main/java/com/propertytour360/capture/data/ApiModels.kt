@@ -168,7 +168,8 @@ data class SpatialRoomDto(
 data class ProgressProjectCountsDto(
     val snapshots: Int = 0,
     val issues: Int = 0,
-    val observations: Int = 0
+    val observations: Int = 0,
+    val analysisRuns: Int = 0
 )
 
 data class ProgressProjectDto(
