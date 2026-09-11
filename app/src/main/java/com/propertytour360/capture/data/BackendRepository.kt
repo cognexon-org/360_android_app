@@ -39,6 +39,43 @@ class BackendRepository(
         return property to unit
     }
 
+    suspend fun listProgressProjects(baseUrl: String, token: String): List<ProgressProjectDto> =
+        serviceProvider(baseUrl).listProgressProjects(bearer(token))
+
+    suspend fun createProgressProject(
+        baseUrl: String, token: String, unitId: String, name: String, captureCadence: String? = "WEEKLY"
+    ): ProgressProjectDto = serviceProvider(baseUrl).createProgressProject(
+        bearer(token), ProgressProjectCreateBody(unitId = unitId, name = name, captureCadence = captureCadence)
+    )
+
+    suspend fun createProgressCapture(
+        baseUrl: String, token: String, project: ProgressProjectDto, mode: String
+    ): ProgressCaptureResponse {
+        val metadata = mapOf(
+            "manufacturer" to Build.MANUFACTURER,
+            "model" to Build.MODEL,
+            "sdk" to Build.VERSION.SDK_INT,
+            "appVersion" to "3.2.0",
+            "progressProjectId" to project.id
+        )
+        return serviceProvider(baseUrl).createProgressCapture(
+            bearer(token), project.id, ProgressCaptureCreateBody(
+                mode = mode,
+                floorId = project.floors.firstOrNull()?.id,
+                deviceMetadata = metadata,
+                spatialScope = project.floors.firstOrNull()?.id?.let { mapOf("floorId" to it) }
+            )
+        )
+    }
+
+    suspend fun createOrReuseSpatialRoom(
+        baseUrl: String, token: String, projectId: String, floorId: String?, name: String, sortOrder: Int
+    ): SpatialRoomDto = serviceProvider(baseUrl).createSpatialRoom(
+        bearer(token), projectId, SpatialRoomCreateBody(
+            floorId = floorId, name = name, sortOrder = sortOrder, reuseByName = true
+        )
+    )
+
     suspend fun createCapture(baseUrl: String, token: String, unitId: String, mode: String): CaptureDto {
         val metadata = mapOf(
             "manufacturer" to Build.MANUFACTURER,
@@ -52,8 +89,11 @@ class BackendRepository(
         )
     }
 
-    suspend fun createRoom(baseUrl: String, token: String, captureId: String, name: String, sortOrder: Int) =
-        serviceProvider(baseUrl).createRoom(bearer(token), captureId, RoomCreateBody(name, sortOrder))
+    suspend fun createRoom(
+        baseUrl: String, token: String, captureId: String, name: String, sortOrder: Int, spatialRoomId: String? = null
+    ) = serviceProvider(baseUrl).createRoom(
+        bearer(token), captureId, RoomCreateBody(name = name, sortOrder = sortOrder, spatialRoomId = spatialRoomId)
+    )
 
     suspend fun connectRooms(baseUrl: String, token: String, captureId: String, fromRoomId: String, toRoomId: String, label: String) =
         serviceProvider(baseUrl).connectRooms(bearer(token), captureId, ConnectionBody(fromRoomId, toRoomId, label))

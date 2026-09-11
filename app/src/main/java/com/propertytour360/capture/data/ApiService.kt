@@ -30,6 +30,32 @@ interface ApiService {
         @Body body: UnitCreateBody
     ): UnitDto
 
+
+    @GET("v2/progress-projects")
+    suspend fun listProgressProjects(
+        @Header("Authorization") authorization: String
+    ): List<ProgressProjectDto>
+
+    @POST("v2/progress-projects")
+    suspend fun createProgressProject(
+        @Header("Authorization") authorization: String,
+        @Body body: ProgressProjectCreateBody
+    ): ProgressProjectDto
+
+    @POST("v2/progress-projects/{projectId}/rooms")
+    suspend fun createSpatialRoom(
+        @Header("Authorization") authorization: String,
+        @Path("projectId") projectId: String,
+        @Body body: SpatialRoomCreateBody
+    ): SpatialRoomDto
+
+    @POST("v2/progress-projects/{projectId}/captures")
+    suspend fun createProgressCapture(
+        @Header("Authorization") authorization: String,
+        @Path("projectId") projectId: String,
+        @Body body: ProgressCaptureCreateBody
+    ): ProgressCaptureResponse
+
     @POST("v1/captures")
     suspend fun createCapture(
         @Header("Authorization") authorization: String,

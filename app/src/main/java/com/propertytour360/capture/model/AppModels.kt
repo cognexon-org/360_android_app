@@ -53,6 +53,7 @@ data class PanoramaCaptureResult(
 data class RoomDraft(
     val serverId: String,
     val name: String,
+    val spatialRoomId: String? = null,
     val sortOrder: Int,
     val localPhotos: List<File> = emptyList(),
     val panoramaFile: File? = null,
@@ -84,6 +85,8 @@ data class RoomDraft(
 
 data class CaptureWorkspace(
     val mode: CaptureMode,
+    val progressProjectId: String,
+    val floorId: String? = null,
     val propertyId: String,
     val unitId: String,
     val captureId: String,
@@ -104,5 +107,6 @@ data class AppUiState(
     val message: String? = null,
     val error: String? = null,
     val workspace: CaptureWorkspace? = null,
-    val uploadProgress: String? = null
+    val uploadProgress: String? = null,
+    val progressProjects: List<com.propertytour360.capture.data.ProgressProjectDto> = emptyList()
 )

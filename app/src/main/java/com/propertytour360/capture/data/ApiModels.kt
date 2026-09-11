@@ -35,7 +35,8 @@ data class UnitDto(
     val propertyId: String,
     val label: String,
     val bedrooms: Int? = null,
-    val bathrooms: Int? = null
+    val bathrooms: Int? = null,
+    val property: PropertyDto? = null
 )
 
 data class CaptureCreateBody(
@@ -61,6 +62,7 @@ data class CaptureDto(
 data class RoomCreateBody(
     val name: String,
     val sortOrder: Int = 0,
+    val spatialRoomId: String? = null,
     val ceilingHeightM: Double? = null,
     val floorPolygon: List<List<Double>>? = null,
     val measurements: Map<String, Any>? = null,
@@ -72,6 +74,7 @@ data class RoomDto(
     val captureId: String,
     val name: String,
     val sortOrder: Int,
+    val spatialRoomId: String? = null,
     val panoramaAssetId: String? = null,
     val ceilingHeightM: Double? = null
 )
@@ -143,3 +146,88 @@ data class FinalizePackageRoom(
 data class FinalizePackagesBody(val rooms: List<FinalizePackageRoom>)
 
 data class FinalizePackagesResponse(val jobId: String, val packageCount: Int)
+
+// ProgressionAi spatial-temporal foundation (v2 API)
+data class SpatialFloorDto(
+    val id: String,
+    val projectId: String,
+    val name: String,
+    val level: Int? = null,
+    val elevationM: Double? = null
+)
+
+data class SpatialRoomDto(
+    val id: String,
+    val projectId: String,
+    val floorId: String? = null,
+    val name: String,
+    val roomType: String? = null,
+    val sortOrder: Int = 0
+)
+
+data class ProgressProjectCountsDto(
+    val snapshots: Int = 0,
+    val issues: Int = 0,
+    val observations: Int = 0
+)
+
+data class ProgressProjectDto(
+    val id: String,
+    val unitId: String,
+    val name: String,
+    val status: String = "ACTIVE",
+    val captureCadence: String? = null,
+    val unit: UnitDto? = null,
+    val floors: List<SpatialFloorDto> = emptyList(),
+    val rooms: List<SpatialRoomDto> = emptyList(),
+    val _count: ProgressProjectCountsDto? = null
+)
+
+data class ProgressProjectCreateBody(
+    val unitId: String,
+    val name: String,
+    val captureCadence: String? = null,
+    val defaultFloorName: String = "Ground / Default"
+)
+
+data class SpatialRoomCreateBody(
+    val floorId: String? = null,
+    val name: String,
+    val roomType: String? = null,
+    val sortOrder: Int = 0,
+    val reuseByName: Boolean = true
+)
+
+data class ProgressCaptureCreateBody(
+    val mode: String,
+    val platform: String = "ANDROID",
+    val floorId: String? = null,
+    val capturedAt: String? = null,
+    val deviceMetadata: Map<String, Any>? = null,
+    val checklist: Map<String, Any>? = null,
+    val spatialScope: Map<String, Any>? = null
+)
+
+data class CaptureSnapshotDto(
+    val id: String,
+    val projectId: String,
+    val captureId: String,
+    val floorId: String? = null,
+    val capturedAt: String,
+    val sourceType: String,
+    val status: String
+)
+
+data class ProgressCaptureSessionDto(
+    val id: String,
+    val unitId: String,
+    val mode: String,
+    val platform: String,
+    val status: String
+)
+
+data class ProgressCaptureResponse(
+    val capture: ProgressCaptureSessionDto,
+    val snapshot: CaptureSnapshotDto
+)
+

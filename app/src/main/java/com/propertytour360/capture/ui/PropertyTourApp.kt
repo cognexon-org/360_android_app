@@ -70,6 +70,7 @@ import com.propertytour360.capture.model.PlanPoint
 import com.propertytour360.capture.model.OpeningDraft
 import com.propertytour360.capture.model.MeasurementDraft
 import com.propertytour360.capture.model.RoomPlacement
+import com.propertytour360.capture.data.ProgressProjectDto
 import java.io.File
 
 private data class PanoramaCaptureRequest(
@@ -121,8 +122,10 @@ fun PropertyTourApp(viewModel: MainViewModel) {
                 state.workspace == null -> DashboardScreen(
                     backendUrl = state.backendUrl,
                     busy = state.busy,
+                    progressProjects = state.progressProjects,
                     onSettings = { settingsOpen = true },
                     onLogout = viewModel::logout,
+                    onStartExisting = viewModel::startExistingWorkspace,
                     onStart = viewModel::startWorkspace
                 )
                 state.workspace?.mode == CaptureMode.PROPERTY_TOUR -> ModeAWorkspaceScreen(
@@ -209,8 +212,8 @@ private fun LoginScreen(
         verticalArrangement = Arrangement.Center
     ) {
         Icon(Icons.Default.Home, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-        Text("PropertyTour360", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
-        Text("Android capture app — Property Tour and Design Scan")
+        Text("ProgressionAi", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+        Text("Reality capture — Mode A and Mode B on one spatial project")
         Spacer(Modifier.height(24.dp))
         OutlinedTextField(server, { server = it }, label = { Text("Backend URL") }, modifier = Modifier.fillMaxWidth())
         Text("Emulator: http://10.0.2.2:3000/ • Physical phone: use your computer's LAN IP", style = MaterialTheme.typography.bodySmall)
@@ -234,8 +237,10 @@ private fun LoginScreen(
 private fun DashboardScreen(
     backendUrl: String,
     busy: Boolean,
+    progressProjects: List<ProgressProjectDto>,
     onSettings: () -> Unit,
     onLogout: () -> Unit,
+    onStartExisting: (String, CaptureMode) -> Unit,
     onStart: (CaptureMode, String, String, String, String, Int?, Int?) -> Unit
 ) {
     var mode by remember { mutableStateOf<CaptureMode?>(null) }
@@ -280,6 +285,30 @@ private fun DashboardScreen(
                 selected = mode == CaptureMode.DESIGN_SCAN,
                 onClick = { mode = CaptureMode.DESIGN_SCAN }
             )
+        }
+        if (progressProjects.isNotEmpty()) {
+            item {
+                Spacer(Modifier.height(4.dp))
+                Text("Existing spatial projects", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text("Repeat Mode A or Mode B capture inside the same persistent property/room identity.", style = MaterialTheme.typography.bodySmall)
+            }
+            items(progressProjects.take(8), key = { it.id }) { project ->
+                Card {
+                    Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(project.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text("${project.unit?.label ?: "Unit"} • ${project.rooms.size} spatial rooms • ${project._count?.snapshots ?: 0} snapshots", style = MaterialTheme.typography.bodySmall)
+                        Button(
+                            onClick = { onStartExisting(project.id, mode!!) },
+                            enabled = mode != null && !busy,
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("Capture selected mode into this project") }
+                    }
+                }
+            }
+            item {
+                Spacer(Modifier.height(8.dp))
+                Text("Or create a new spatial project", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            }
         }
         item {
             Text("Property and unit", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)

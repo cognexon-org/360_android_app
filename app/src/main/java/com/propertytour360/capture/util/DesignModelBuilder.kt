@@ -40,6 +40,8 @@ object DesignModelBuilder {
                 "verificationStatus" to "DESIGNER_REVIEW_REQUIRED",
                 "structuralVerificationRequired" to true,
                 "sourceEvidencePreserved" to true,
+                "spatialIdentityLinked" to rooms.all { !it.spatialRoomId.isNullOrBlank() },
+                "spatialRoomIds" to rooms.mapNotNull { it.spatialRoomId },
                 "mobilePlanConfirmed" to rooms.all { it.floorPolygon.size >= 3 }
             )
         )
@@ -70,6 +72,7 @@ object DesignModelBuilder {
         }
         return mapOf(
             "id" to room.serverId,
+            "spatialRoomId" to room.spatialRoomId,
             "name" to room.name,
             "floorId" to room.placement.floorId,
             "transform" to mapOf(

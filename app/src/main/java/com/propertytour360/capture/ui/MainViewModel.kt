@@ -43,7 +43,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val baseUrl = preferences.backendUrl.first()
             val token = preferences.token.first()
-            _state.update { it.copy(backendUrl = baseUrl, token = token) }
+            val projects = if (!token.isNullOrBlank() && baseUrl.isNotBlank()) {
+                runCatching { repository.listProgressProjects(baseUrl, token) }.getOrDefault(emptyList())
+            } else emptyList()
+            _state.update { it.copy(backendUrl = baseUrl, token = token, progressProjects = projects) }
         }
     }
 
@@ -63,15 +66,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun verifyOtp(phone: String, code: String, name: String?) = runAction {
-        val result = repository.verifyOtp(requireBaseUrl(), phone, code, name)
+        val baseUrl = requireBaseUrl()
+        val result = repository.verifyOtp(baseUrl, phone, code, name)
         preferences.setToken(result.token)
-        _state.update { it.copy(token = result.token, phone = phone, message = "Signed in") }
+        val projects = repository.listProgressProjects(baseUrl, result.token)
+        _state.update { it.copy(token = result.token, phone = phone, progressProjects = projects, message = "Signed in") }
     }
 
     fun logout() {
         viewModelScope.launch {
             preferences.setToken(null)
-            _state.update { AppUiState(backendUrl = it.backendUrl, message = "Signed out") }
+            _state.update { AppUiState(backendUrl = it.backendUrl, message = "Signed out", progressProjects = emptyList()) }
         }
     }
 
@@ -85,42 +90,90 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         bathrooms: Int?
     ) = runAction {
         val token = requireToken()
+        val baseUrl = requireBaseUrl()
         val (property, unit) = repository.createPropertyAndUnit(
-            requireBaseUrl(), token, propertyName, address, propertyType,
+            baseUrl, token, propertyName, address, propertyType,
             unitLabel, bedrooms, bathrooms
         )
-        val capture = repository.createCapture(requireBaseUrl(), token, unit.id, mode.apiValue)
+        val progressProject = repository.createProgressProject(
+            baseUrl, token, unit.id, "$propertyName — $unitLabel"
+        )
+        val progressCapture = repository.createProgressCapture(baseUrl, token, progressProject, mode.apiValue)
+        val refreshedProjects = repository.listProgressProjects(baseUrl, token)
         _state.update {
             it.copy(
                 workspace = CaptureWorkspace(
                     mode = mode,
+                    progressProjectId = progressProject.id,
+                    floorId = progressProject.floors.firstOrNull()?.id,
                     propertyId = property.id,
                     unitId = unit.id,
-                    captureId = capture.id,
+                    captureId = progressCapture.capture.id,
                     propertyName = property.name,
                     unitLabel = unit.label
                 ),
-                message = "Capture session created"
+                progressProjects = refreshedProjects,
+                message = "Spatial project and capture session created"
             )
         }
     }
 
+    fun startExistingWorkspace(projectId: String, mode: CaptureMode) = runAction {
+        val token = requireToken()
+        val baseUrl = requireBaseUrl()
+        val project = _state.value.progressProjects.firstOrNull { it.id == projectId }
+            ?: repository.listProgressProjects(baseUrl, token).firstOrNull { it.id == projectId }
+            ?: error("Spatial project not found")
+        val unit = project.unit ?: error("Project unit details are unavailable")
+        val capture = repository.createProgressCapture(baseUrl, token, project, mode.apiValue)
+        _state.update {
+            it.copy(
+                workspace = CaptureWorkspace(
+                    mode = mode,
+                    progressProjectId = project.id,
+                    floorId = project.floors.firstOrNull()?.id,
+                    propertyId = unit.propertyId,
+                    unitId = project.unitId,
+                    captureId = capture.capture.id,
+                    propertyName = unit.property?.name ?: project.name,
+                    unitLabel = unit.label
+                ),
+                message = "New ${mode.title} capture added to ${project.name}"
+            )
+        }
+    }
+
+    fun refreshProgressProjects() = runAction {
+        val projects = repository.listProgressProjects(requireBaseUrl(), requireToken())
+        _state.update { it.copy(progressProjects = projects, message = "Projects refreshed") }
+    }
+
     fun addRoom(name: String) = runAction {
         val workspace = requireWorkspace()
+        require(workspace.rooms.none { it.name.equals(name, ignoreCase = true) }) { "This room is already part of the current capture" }
         val token = requireToken()
-        val room = repository.createRoom(
-            requireBaseUrl(), token, workspace.captureId, name, workspace.rooms.size
+        val baseUrl = requireBaseUrl()
+        val spatialRoom = repository.createOrReuseSpatialRoom(
+            baseUrl, token, workspace.progressProjectId, workspace.floorId, name, workspace.rooms.size
         )
-        val updatedRoom = RoomDraft(room.id, room.name, room.sortOrder)
+        val room = repository.createRoom(
+            baseUrl, token, workspace.captureId, name, workspace.rooms.size, spatialRoom.id
+        )
+        val updatedRoom = RoomDraft(
+            serverId = room.id,
+            name = room.name,
+            spatialRoomId = spatialRoom.id,
+            sortOrder = room.sortOrder
+        )
         val previous = workspace.rooms.lastOrNull()
         if (previous != null) {
             repository.connectRooms(
-                requireBaseUrl(), token, workspace.captureId,
+                baseUrl, token, workspace.captureId,
                 previous.serverId, updatedRoom.serverId,
                 "${previous.name} to ${updatedRoom.name}"
             )
         }
-        _state.update { it.copy(workspace = workspace.copy(rooms = workspace.rooms + updatedRoom), message = "$name added") }
+        _state.update { it.copy(workspace = workspace.copy(rooms = workspace.rooms + updatedRoom), message = "$name linked to the shared spatial model") }
     }
 
     fun setRoomPhotos(roomId: String, result: PanoramaCaptureResult) {

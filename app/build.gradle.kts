@@ -12,8 +12,8 @@ android {
         applicationId = "com.propertytour360.capture"
         minSdk = 24
         targetSdk = 36
-        versionCode = 6
-        versionName = "3.1.0"
+        versionCode = 7
+        versionName = "3.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
