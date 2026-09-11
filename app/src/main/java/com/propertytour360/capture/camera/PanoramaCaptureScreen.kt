@@ -8,6 +8,7 @@ import android.os.SystemClock
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.camera2.interop.Camera2CameraControl
+import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
@@ -19,6 +20,8 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,6 +32,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -39,6 +44,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -46,14 +52,18 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Observer
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.google.gson.GsonBuilder
 import com.propertytour360.capture.model.PanoramaCapturePattern
@@ -63,6 +73,7 @@ import com.propertytour360.capture.util.AngleMath
 import kotlinx.coroutines.delay
 import java.io.File
 import java.text.DecimalFormat
+import kotlin.math.abs
 
 // Tighter than the old 7°: the server-side feature matcher needs neighbouring
 // frames to genuinely overlap, and two adjacent frames each 7° off in opposite
@@ -74,6 +85,28 @@ private const val MAX_CAPTURE_SPEED_DEGREES_PER_SECOND = 15f
 private const val AUTO_CAPTURE_DWELL_MS = 600L
 private const val UPPER_RING_PITCH_DEGREES = -30f
 private const val LOWER_RING_PITCH_DEGREES = 30f
+
+private data class ZoomPreset(
+    val ratio: Float,
+    val label: String,
+    val physicalCameraId: String? = null
+)
+
+@OptIn(ExperimentalCamera2Interop::class)
+private fun createCameraSelector(cameraId: String?): CameraSelector {
+    if (cameraId == null) return CameraSelector.DEFAULT_BACK_CAMERA
+    return CameraSelector.Builder()
+        .requireLensFacing(CameraSelector.LENS_FACING_BACK)
+        .addCameraFilter { cameraInfos ->
+            val match = cameraInfos.filter { info ->
+                runCatching {
+                    Camera2CameraInfo.from(info).cameraId == cameraId
+                }.getOrDefault(false)
+            }
+            if (match.isNotEmpty()) match else cameraInfos
+        }
+        .build()
+}
 
 private data class CaptureTarget(
     val yawDegrees: Float,
@@ -137,15 +170,80 @@ fun PanoramaCaptureScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val activity = context as? Activity
-    val fov = remember { CameraFovEstimator.estimateNormalBackCameraPortrait(context) }
-    val ringFrameCount = remember(fov.horizontalDegrees) {
-        CameraFovEstimator.recommendedRingFrameCount(fov.horizontalDegrees)
+    val baseFov = remember { CameraFovEstimator.estimateNormalBackCameraPortrait(context) }
+    val detectedLenses = remember { CameraFovEstimator.detectAvailableLenses(context) }
+
+    var activePhysicalCameraId by remember { mutableStateOf<String?>(null) }
+    val activeCameraSelector = remember(activePhysicalCameraId) {
+        createCameraSelector(activePhysicalCameraId)
     }
+
+    var boundCamera by remember { mutableStateOf<Camera?>(null) }
+    var minZoomRatio by remember { mutableFloatStateOf(1.0f) }
+    var maxZoomRatio by remember { mutableFloatStateOf(1.0f) }
+    var currentZoomRatio by remember { mutableFloatStateOf(1.0f) }
+    var selectedZoomRatio by remember { mutableFloatStateOf(1.0f) }
+
+    DisposableEffect(boundCamera, lifecycleOwner) {
+        val camera = boundCamera ?: return@DisposableEffect onDispose {}
+        val observer = Observer<androidx.camera.core.ZoomState> { state ->
+            if (state != null) {
+                minZoomRatio = state.minZoomRatio
+                maxZoomRatio = state.maxZoomRatio
+                currentZoomRatio = state.zoomRatio
+            }
+        }
+        camera.cameraInfo.zoomState.observe(lifecycleOwner, observer)
+        onDispose {
+            camera.cameraInfo.zoomState.removeObserver(observer)
+        }
+    }
+
+    val zoomPresets = remember(detectedLenses, minZoomRatio, maxZoomRatio) {
+        val presets = mutableListOf<ZoomPreset>()
+
+        // 1. Add physical camera lenses if available
+        detectedLenses.forEach { lens ->
+            if (lens.isUltraWide && lens.physicalCameraId != null) {
+                presets += ZoomPreset(
+                    ratio = lens.zoomRatio,
+                    label = lens.label,
+                    physicalCameraId = lens.physicalCameraId
+                )
+            }
+        }
+
+        // 2. Add logical zoom options if supported by CameraX zoomState
+        if (minZoomRatio <= 0.55f) {
+            presets += ZoomPreset(maxOf(0.5f, minZoomRatio), "0.5×")
+            if (maxZoomRatio >= 0.6f) {
+                presets += ZoomPreset(0.6f, "0.6×")
+            }
+        } else if (minZoomRatio <= 0.65f) {
+            presets += ZoomPreset(maxOf(0.6f, minZoomRatio), "0.6×")
+        }
+
+        // 3. Always include 1x standard wide
+        presets += ZoomPreset(1.0f, "1×", null)
+
+        presets.distinctBy { it.label }.sortedBy { it.ratio }
+    }
+
+    val effectiveFov = remember(baseFov, selectedZoomRatio, activePhysicalCameraId) {
+        val physicalLens = detectedLenses.firstOrNull { it.physicalCameraId == activePhysicalCameraId }
+        physicalLens?.fov ?: CameraFovEstimator.calculateEffectiveFov(baseFov, selectedZoomRatio)
+    }
+    val recommendedFrameCount = remember(effectiveFov.horizontalDegrees) {
+        CameraFovEstimator.recommendedRingFrameCount(effectiveFov.horizontalDegrees)
+    }
+    var lockedRingFrameCount by remember { mutableStateOf<Int?>(null) }
+    val ringFrameCount = lockedRingFrameCount ?: recommendedFrameCount
+
     val captureTargets = remember(pattern, ringFrameCount) {
         buildCaptureTargets(pattern, ringFrameCount)
     }
-    val quickPitchLimit = remember(fov.verticalDegrees) {
-        (fov.verticalDegrees / 2f - 4f).coerceIn(25f, 42f)
+    val quickPitchLimit = remember(effectiveFov.verticalDegrees) {
+        (effectiveFov.verticalDegrees / 2f - 4f).coerceIn(25f, 55f)
     }
     val minPitchDegrees = if (pattern.fullSphere) -90f else -quickPitchLimit
     val maxPitchDegrees = if (pattern.fullSphere) 90f else quickPitchLimit
@@ -195,11 +293,22 @@ fun PanoramaCaptureScreen(
     }
     var startYaw by remember { mutableStateOf<Float?>(null) }
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
-    var boundCamera by remember { mutableStateOf<Camera?>(null) }
     var capturing by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var autoCapture by remember { mutableStateOf(true) }
     var alignedSinceMs by remember { mutableLongStateOf(0L) }
+
+    fun switchZoom(preset: ZoomPreset) {
+        selectedZoomRatio = preset.ratio
+        if (preset.physicalCameraId != null && preset.physicalCameraId != activePhysicalCameraId) {
+            activePhysicalCameraId = preset.physicalCameraId
+        } else if (preset.physicalCameraId == null && activePhysicalCameraId != null) {
+            activePhysicalCameraId = null
+        } else {
+            val clamped = preset.ratio.coerceIn(minZoomRatio, maxZoomRatio)
+            boundCamera?.cameraControl?.setZoomRatio(clamped)
+        }
+    }
 
     DisposableEffect(Unit) {
         tracker.start()
@@ -231,6 +340,9 @@ fun PanoramaCaptureScreen(
 
         capturing = true
         alignedSinceMs = 0L
+        if (files.isEmpty()) {
+            lockedRingFrameCount = ringFrameCount
+        }
         capture.takePicture(
             ImageCapture.OutputFileOptions.Builder(file).build(),
             ContextCompat.getMainExecutor(context),
@@ -280,35 +392,54 @@ fun PanoramaCaptureScreen(
         }
     }
 
+    var cameraProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
+    var previewViewInstance by remember { mutableStateOf<PreviewView?>(null) }
+
+    LaunchedEffect(cameraProvider, previewViewInstance, activeCameraSelector) {
+        val provider = cameraProvider ?: return@LaunchedEffect
+        val previewView = previewViewInstance ?: return@LaunchedEffect
+        try {
+            val preview = Preview.Builder().build().also {
+                it.setSurfaceProvider(previewView.surfaceProvider)
+            }
+            val capture = ImageCapture.Builder()
+                .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                .setJpegQuality(95)
+                .setFlashMode(ImageCapture.FLASH_MODE_OFF)
+                .setTargetRotation(
+                    previewView.display?.rotation ?: android.view.Surface.ROTATION_0
+                )
+                .build()
+            provider.unbindAll()
+            val camera = provider.bindToLifecycle(
+                lifecycleOwner,
+                activeCameraSelector,
+                preview,
+                capture
+            )
+            boundCamera = camera
+            imageCapture = capture
+            val currentMin = camera.cameraInfo.zoomState.value?.minZoomRatio ?: 1.0f
+            val currentMax = camera.cameraInfo.zoomState.value?.maxZoomRatio ?: 1.0f
+            camera.cameraControl.setZoomRatio(selectedZoomRatio.coerceIn(currentMin, currentMax))
+            if (files.isNotEmpty()) {
+                setExposureLock(camera, true)
+            }
+        } catch (throwable: Throwable) {
+            error = throwable.message
+        }
+    }
+
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(
             factory = { ctx ->
                 PreviewView(ctx).also { previewView ->
                     previewView.scaleType = PreviewView.ScaleType.FILL_CENTER
+                    previewViewInstance = previewView
                     val providerFuture = ProcessCameraProvider.getInstance(ctx)
                     providerFuture.addListener({
                         try {
-                            val provider = providerFuture.get()
-                            val preview = Preview.Builder().build().also {
-                                it.setSurfaceProvider(previewView.surfaceProvider)
-                            }
-                            val capture = ImageCapture.Builder()
-                                .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
-                                .setJpegQuality(95)
-                                .setFlashMode(ImageCapture.FLASH_MODE_OFF)
-                                .setTargetRotation(
-                                    previewView.display?.rotation ?: android.view.Surface.ROTATION_0
-                                )
-                                .build()
-                            provider.unbindAll()
-                            val camera = provider.bindToLifecycle(
-                                lifecycleOwner,
-                                CameraSelector.DEFAULT_BACK_CAMERA,
-                                preview,
-                                capture
-                            )
-                            boundCamera = camera
-                            imageCapture = capture
+                            cameraProvider = providerFuture.get()
                         } catch (throwable: Throwable) {
                             error = throwable.message
                         }
@@ -366,6 +497,13 @@ fun PanoramaCaptureScreen(
                     else -> "Aligned — hold steady"
                 }
 
+                val zoomLabel = when {
+                    abs(selectedZoomRatio - 0.5f) < 0.05f -> "ultra-wide 0.5×"
+                    abs(selectedZoomRatio - 0.6f) < 0.05f -> "ultra-wide 0.6×"
+                    selectedZoomRatio < 0.95f -> "wide ${DecimalFormat("0.#").format(selectedZoomRatio)}×"
+                    else -> "normal 1×"
+                }
+
                 Text(
                     target?.let {
                         "${it.label}: ${it.yawDegrees.toInt()}° / ${it.pitchDegrees.toInt()}°"
@@ -384,7 +522,7 @@ fun PanoramaCaptureScreen(
                     )
                 }
                 Text(
-                    "$ringFrameCount positions per ring • normal 1× camera • portrait",
+                    "$ringFrameCount positions per ring • $zoomLabel camera • portrait",
                     color = Color.LightGray,
                     style = MaterialTheme.typography.bodySmall
                 )
@@ -396,6 +534,15 @@ fun PanoramaCaptureScreen(
                     Switch(checked = autoCapture, onCheckedChange = { autoCapture = it })
                 }
                 Spacer(Modifier.height(6.dp))
+
+                if (target != null && zoomPresets.isNotEmpty()) {
+                    ZoomSelector(
+                        presets = zoomPresets,
+                        selectedRatio = selectedZoomRatio,
+                        onSelectPreset = { switchZoom(it) },
+                        modifier = Modifier.padding(bottom = 10.dp)
+                    )
+                }
 
                 if (target != null) {
                     Button(
@@ -422,8 +569,8 @@ fun PanoramaCaptureScreen(
                                 "capturePattern" to pattern.apiValue,
                                 "ringFrameCount" to ringFrameCount,
                                 "frameCount" to files.size,
-                                "horizontalFovDegrees" to fov.horizontalDegrees,
-                                "verticalFovDegrees" to fov.verticalDegrees,
+                                "horizontalFovDegrees" to effectiveFov.horizontalDegrees,
+                                "verticalFovDegrees" to effectiveFov.verticalDegrees,
                                 "minPitchDegrees" to minPitchDegrees,
                                 "maxPitchDegrees" to maxPitchDegrees,
                                 "frames" to frameMetadata.toList()
@@ -437,8 +584,8 @@ fun PanoramaCaptureScreen(
                                     manifestFile = manifest,
                                     pattern = pattern,
                                     frames = frameMetadata.toList(),
-                                    horizontalFovDegrees = fov.horizontalDegrees,
-                                    verticalFovDegrees = fov.verticalDegrees,
+                                    horizontalFovDegrees = effectiveFov.horizontalDegrees,
+                                    verticalFovDegrees = effectiveFov.verticalDegrees,
                                     minPitchDegrees = minPitchDegrees,
                                     maxPitchDegrees = maxPitchDegrees
                                 )
@@ -457,6 +604,7 @@ fun PanoramaCaptureScreen(
                             frameMetadata.removeLastOrNull()
                             if (files.isEmpty()) {
                                 startYaw = null
+                                lockedRingFrameCount = null
                                 // Back to no reference frame: let the camera
                                 // re-meter for the fresh first shot.
                                 setExposureLock(boundCamera, false)
@@ -467,6 +615,43 @@ fun PanoramaCaptureScreen(
                         Text("Retake previous", color = Color.White)
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ZoomSelector(
+    presets: List<ZoomPreset>,
+    selectedRatio: Float,
+    onSelectPreset: (ZoomPreset) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(20.dp))
+            .background(Color(0x80222222))
+            .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(20.dp))
+            .padding(horizontal = 4.dp, vertical = 3.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        presets.forEach { preset ->
+            val isSelected = abs(selectedRatio - preset.ratio) < 0.05f
+            Box(
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .background(if (isSelected) Color(0xFFFFC857) else Color.Transparent)
+                    .clickable { onSelectPreset(preset) }
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = preset.label,
+                    color = if (isSelected) Color.Black else Color.White,
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                    fontSize = 12.sp
+                )
             }
         }
     }
