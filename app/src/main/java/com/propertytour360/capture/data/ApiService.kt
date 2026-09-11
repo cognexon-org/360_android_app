@@ -55,6 +55,12 @@ interface ApiService {
         @Body body: SpatialRoomCreateBody
     ): SpatialRoomDto
 
+    @GET("v2/progress-projects/{projectId}/design-intents")
+    suspend fun listProgressDesignIntents(
+        @Header("Authorization") authorization: String,
+        @Path("projectId") projectId: String
+    ): List<ProgressDesignIntentDto>
+
     @POST("v2/progress-projects/{projectId}/captures")
     suspend fun createProgressCapture(
         @Header("Authorization") authorization: String,

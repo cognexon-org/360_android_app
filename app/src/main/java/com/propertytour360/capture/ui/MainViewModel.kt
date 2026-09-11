@@ -167,10 +167,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val preflight = CapturePreflight.evaluate(getApplication())
         require(preflight.canStart) { preflight.blockers.joinToString(" • ") }
         val previousSnapshots = runCatching { repository.listProgressTimeline(baseUrl, token, project.id) }.getOrDefault(emptyList())
+        val designIntents = runCatching { repository.listProgressDesignIntents(baseUrl, token, project.id) }.getOrDefault(emptyList())
+        val designReference = designIntents
+            .filter { it.verificationStatus == "SITE_VERIFIED" || it.verificationStatus == "DESIGNER_CONFIRMED" }
+            .maxByOrNull { it.updatedAt }
         val capture = repository.createProgressCapture(
             baseUrl, token, project, mode.apiValue,
             deviceMetadataExtra = preflight.deviceTelemetry(),
-            checklist = mapOf("preflight" to preflight.reportMap())
+            checklist = mapOf("preflight" to preflight.reportMap()),
+            designReferenceProjectId = designReference?.id,
+            designReferenceVersion = designReference?.activeVersion
         )
         runCatching {
             repository.submitCaptureQualityFeedback(
@@ -190,7 +196,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     propertyName = unit.property?.name ?: project.name,
                     unitLabel = unit.label
                 ),
-                message = "New ${mode.title} capture added to ${project.name} after ${previousSnapshots.size} previous snapshot${if (previousSnapshots.size == 1) "" else "s"}"
+                message = "New ${mode.title} capture added to ${project.name} after ${previousSnapshots.size} previous snapshot${if (previousSnapshots.size == 1) "" else "s"}" +
+                    (designReference?.let { " • linked to ${it.name} v${it.activeVersion}" } ?: "")
             )
         }
     }

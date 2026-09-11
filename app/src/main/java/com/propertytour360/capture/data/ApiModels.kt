@@ -205,7 +205,9 @@ data class ProgressCaptureCreateBody(
     val capturedAt: String? = null,
     val deviceMetadata: Map<String, Any>? = null,
     val checklist: Map<String, Any>? = null,
-    val spatialScope: Map<String, Any>? = null
+    val spatialScope: Map<String, Any>? = null,
+    val designReferenceProjectId: String? = null,
+    val designReferenceVersion: Int? = null
 )
 
 data class CaptureSnapshotDto(
@@ -215,7 +217,9 @@ data class CaptureSnapshotDto(
     val floorId: String? = null,
     val capturedAt: String,
     val sourceType: String,
-    val status: String
+    val status: String,
+    val designReferenceProjectId: String? = null,
+    val designReferenceVersion: Int? = null
 )
 
 data class ProgressCaptureSessionDto(
@@ -231,6 +235,17 @@ data class ProgressCaptureResponse(
     val snapshot: CaptureSnapshotDto
 )
 
+
+
+// Patch 05 — approved/confirmed design intent that a field capture may reference.
+data class ProgressDesignIntentDto(
+    val id: String,
+    val name: String,
+    val status: String,
+    val verificationStatus: String,
+    val activeVersion: Int,
+    val updatedAt: String
+)
 
 // Patch 02 — resumable upload and capture-quality contracts.
 data class ResumableUploadCreateBody(
@@ -317,6 +332,8 @@ data class ProgressTimelineSnapshotDto(
     val capturedAt: String,
     val sourceType: String,
     val status: String,
+    val designReferenceProjectId: String? = null,
+    val designReferenceVersion: Int? = null,
     val floor: SpatialFloorDto? = null,
     val capture: ProgressTimelineCaptureDto
 )

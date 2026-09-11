@@ -50,6 +50,9 @@ class BackendRepository(
     suspend fun listProgressTimeline(baseUrl: String, token: String, projectId: String): List<ProgressTimelineSnapshotDto> =
         serviceProvider(baseUrl).listProgressTimeline(bearer(token), projectId)
 
+    suspend fun listProgressDesignIntents(baseUrl: String, token: String, projectId: String): List<ProgressDesignIntentDto> =
+        serviceProvider(baseUrl).listProgressDesignIntents(bearer(token), projectId)
+
     suspend fun createProgressProject(
         baseUrl: String, token: String, unitId: String, name: String, captureCadence: String? = "WEEKLY"
     ): ProgressProjectDto = serviceProvider(baseUrl).createProgressProject(
@@ -62,7 +65,9 @@ class BackendRepository(
         project: ProgressProjectDto,
         mode: String,
         deviceMetadataExtra: Map<String, Any> = emptyMap(),
-        checklist: Map<String, Any>? = null
+        checklist: Map<String, Any>? = null,
+        designReferenceProjectId: String? = null,
+        designReferenceVersion: Int? = null
     ): ProgressCaptureResponse {
         val metadata = mapOf(
             "manufacturer" to Build.MANUFACTURER,
@@ -77,7 +82,9 @@ class BackendRepository(
                 floorId = project.floors.firstOrNull()?.id,
                 deviceMetadata = metadata,
                 checklist = checklist,
-                spatialScope = project.floors.firstOrNull()?.id?.let { mapOf("floorId" to it) }
+                spatialScope = project.floors.firstOrNull()?.id?.let { mapOf("floorId" to it) },
+                designReferenceProjectId = designReferenceProjectId,
+                designReferenceVersion = designReferenceVersion
             )
         )
     }
